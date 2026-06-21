@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render an ADR from vet-package JSON output
+# Render an ADR from vet-package JSON output (v2: multi-signal CVE quadrant)
 # Usage: render-adr <vet-result.json> [sequence-number]
 set -euo pipefail
 
@@ -15,7 +15,6 @@ pub_time=$(jq -r '.metadata.publish_time' "$INPUT")
 age_days=$(jq -r '.metadata.age_days' "$INPUT")
 maint_count=$(jq -r '.metadata.maintainer_count' "$INPUT")
 maintainers=$(jq -r '.metadata.maintainers | join(", ")' "$INPUT")
-vuln_count=$(jq -r '.metadata.vuln_count' "$INPUT")
 scorecard=$(jq -r '.metadata.scorecard' "$INPUT")
 dep_count=$(jq -r '.metadata.dep_count' "$INPUT")
 verdict=$(jq -r '.summary.verdict' "$INPUT")
@@ -23,6 +22,14 @@ gates_pass=$(jq -r '.summary.gates_pass' "$INPUT")
 gates_total=$(jq -r '.summary.gates_total' "$INPUT")
 scored_pass=$(jq -r '.summary.scored_pass' "$INPUT")
 scored_total=$(jq -r '.summary.scored_total' "$INPUT")
+
+vuln_total=$(jq -r '.vulns.total' "$INPUT")
+p1_plus=$(jq -r '.vulns.quadrant."P1+_kev"' "$INPUT")
+p1=$(jq -r '.vulns.quadrant.P1_high_likely' "$INPUT")
+p2=$(jq -r '.vulns.quadrant.P2_high_unlikely' "$INPUT")
+p3=$(jq -r '.vulns.quadrant.P3_low_likely' "$INPUT")
+p4=$(jq -r '.vulns.quadrant.P4_low_unlikely' "$INPUT")
+blocking=$(jq -r '.vulns.blocking' "$INPUT")
 
 g_license=$(jq -r '.gates.license' "$INPUT")
 g_cve=$(jq -r '.gates.cve' "$INPUT")
@@ -36,7 +43,6 @@ s_distro=$(jq -r '.scored.distro_inclusion' "$INPUT")
 s_deps=$(jq -r '.scored.dep_depth_lte_500' "$INPUT")
 
 today=$(date +%Y-%m-%d)
-safe_pkg=$(echo "$pkg" | sed 's|@||g;s|/|-|g')
 
 cat << EOF
 # ADR-${SEQ}: \`npm/${pkg}\` — ${verdict}
@@ -61,10 +67,32 @@ cat << EOF
 | # | Gate | Result | Evidence |
 |---|---|---|---|
 | 1 | License is permissive | ${g_license} | \`${license}\` |
-| 2 | Zero high/critical CVEs | ${g_cve} | osv.dev: ${vuln_count} vulns found |
+| 2 | Zero P1+/P1 CVEs | ${g_cve} | ${vuln_total} total vulns, ${blocking} blocking (P1+: ${p1_plus}, P1: ${p1}) |
 | 3 | No install scripts | ${g_scripts} | preinstall/postinstall/install checked |
 | 4 | Quarantine >= 7 days | ${g_quarantine} | Published ${pub_time} (${age_days}d ago) |
-| 5 | Registry-repo match | ${g_match} | npm → ${gh_slug} |
+| 5 | Registry-repo match | ${g_match} | npm -> ${gh_slug} |
+
+### CVE quadrant breakdown (CVSS + EPSS + KEV)
+
+| Priority | Count | Action | Description |
+|---|---|---|---|
+| P1+ (KEV) | ${p1_plus} | BLOCK | Confirmed exploited in the wild |
+| P1 (high/likely) | ${p1} | BLOCK | CVSS >= 6.0 AND EPSS >= 0.2 |
+| P2 (high/unlikely) | ${p2} | WARN | CVSS >= 6.0, EPSS < 0.2 |
+| P3 (low/likely) | ${p3} | WARN | CVSS < 6.0, EPSS >= 0.2 |
+| P4 (low/unlikely) | ${p4} | ACCEPT | CVSS < 6.0, EPSS < 0.2 |
+EOF
+
+if [[ "$vuln_total" -gt 0 ]]; then
+  echo ""
+  echo "### CVE details"
+  echo ""
+  echo "| CVE | Severity | CVSS (est) | EPSS | KEV | Priority |"
+  echo "|---|---|---|---|---|---|"
+  jq -r '.vulns.details[] | "| \(.cve) | \(.severity) | \(.cvss_est) | \(.epss) | \(.kev) | **\(.priority)** |"' "$INPUT"
+fi
+
+cat << EOF
 
 ### Scored checks (>= 3 must PASS)
 
@@ -98,5 +126,5 @@ $([ "$gh_slug" != "" ] && echo "- deps.dev: https://deps.dev/npm/${pkg}/${ver}")
 
 | Date | Change | By |
 |---|---|---|
-| ${today} | Initial ADR (automated via vet-package) | @eqdmc/security-review |
+| ${today} | Initial ADR (automated via vet-package v2) | @eqdmc/security-review |
 EOF
