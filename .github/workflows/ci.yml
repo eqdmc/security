@@ -1,0 +1,14 @@
+# Managed by eqdmc/.github — calls org reusable CI.
+# Produces check name "ci / ci" to satisfy org ruleset main-protection.
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: eqdmc/.github/.github/workflows/ci.yml@main
+    secrets: inherit

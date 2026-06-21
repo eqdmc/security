@@ -1,0 +1,15 @@
+# Managed by eqdmc/.github — do not edit. Changes overwritten on next sync.
+name: Issue validation
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  validate:
+    uses: eqdmc/.github/.github/workflows/issue-validate.yml@724554ebf56d61de2b80d4a058cbed2a91b68a76 # v0.2.1
+    secrets: inherit

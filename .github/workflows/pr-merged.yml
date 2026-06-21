@@ -1,0 +1,15 @@
+# Managed by eqdmc/.github — do not edit. Changes overwritten on next sync.
+name: PR Merged
+
+on:
+  pull_request_target:
+    types: [closed]
+
+jobs:
+  outcome:
+    uses: eqdmc/.github/.github/workflows/outcome-comment.yml@724554ebf56d61de2b80d4a058cbed2a91b68a76 # v0.2.1
+    secrets: inherit
+
+  update-queued:
+    uses: eqdmc/.github/.github/workflows/auto-update-branch.yml@724554ebf56d61de2b80d4a058cbed2a91b68a76 # v0.2.1
+    secrets: inherit

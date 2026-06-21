@@ -1,0 +1,40 @@
+{
+  "_comment": "Single source of truth for PR and commit conventions. Read by pr-metadata-check.yml and issue-validate.yml at runtime. Update here, not in workflows.",
+  "commit_types": ["feat", "fix", "refactor", "docs", "test", "chore"],
+  "branch_prefixes": ["feat/", "fix/", "agent/", "refactor/", "chore/", "docs/", "test/"],
+  "bot_branch_prefixes": ["dependabot/"],
+  "bot_authors": ["dependabot[bot]", "renovate[bot]", "github-actions[bot]"],
+  "type_labels": ["agent-work", "enhancement", "bug", "fix", "feat", "docs", "chore", "refactor"],
+  "dependency_cooldown_days": 7,
+  "dependency_cooldown_major_days": 14,
+  "issue_templates": {
+    "agent-task": {
+      "label": "agent-work",
+      "required_sections": ["Summary", "Acceptance criteria", "Verification", "Tier"]
+    },
+    "bootstrap-session": {
+      "label": "bootstrap",
+      "required_sections": ["Reason", "Success criteria", "Child issues", "Scope"]
+    },
+    "epic": {
+      "label": "epic",
+      "required_sections": ["Goal", "Success criteria", "Child issues"]
+    },
+    "bug": {
+      "label": "fix",
+      "required_sections": ["What happened?", "Expected behavior"]
+    },
+    "security": {
+      "label": "risk:high",
+      "required_sections": ["What is the concern?"]
+    },
+    "idea": {
+      "label": "idea",
+      "required_sections": []
+    },
+    "agent-escalation": {
+      "label": "needs-human",
+      "required_sections": ["Blocking issue", "Reason", "What was attempted", "Files involved"]
+    }
+  }
+}
