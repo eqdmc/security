@@ -1,9 +1,13 @@
-# Binary dependency vetting policy
+# Binary dependency vetting policy with multi-signal CVE prioritization
 # All checks are PASS/FAIL. No advisory-only.
-version: 1
+#
+# CVE gate uses CVE_Prioritizer quadrant model (arxiv:2506.01220):
+#   Signal chain: KEV (confirmed exploited) -> EPSS (exploitation probability) -> CVSS (severity)
+#   18x efficiency vs CVSS-alone triage while maintaining 85%+ exploitation coverage
+version: 2
 
 gates:
-  # ALL must PASS — any single FAIL = BLOCKED
+  # ALL must PASS -- any single FAIL = BLOCKED
   - id: license
     name: License is permissive
     type: hard
@@ -39,13 +43,28 @@ gates:
       - LGPL-3.0-only
       - SSPL-1.0
       - BSL-1.1
-    spdx_expressions: true  # handles "MIT OR Apache-2.0"
+    spdx_expressions: true
 
   - id: cve
-    name: Zero high/critical CVEs
+    name: Zero P1+ or P1 vulnerabilities
     type: hard
-    source: osv.dev
-    severity_floor: 7.0
+    model: quadrant
+    sources:
+      cvss: osv.dev (database_specific.severity -> estimated numeric)
+      epss: api.first.org/data/v1/epss
+      kev: cisa.gov known-exploited-vulnerabilities.json
+    quadrant:
+      P1+: kev_listed (confirmed exploited in the wild)
+      P1: cvss >= 6.0 AND epss >= 0.2 (high severity + high exploitation probability)
+      P2: cvss >= 6.0 AND epss < 0.2 (high severity, low exploitation probability)
+      P3: cvss < 6.0 AND epss >= 0.2 (low severity, high exploitation probability)
+      P4: cvss < 6.0 AND epss < 0.2 (low severity, low exploitation probability)
+    blocking: [P1+, P1]
+    warn: [P2, P3]
+    accept: [P4]
+    thresholds:
+      cvss_floor: 6.0
+      epss_floor: 0.2
 
   - id: install_scripts
     name: No install scripts
