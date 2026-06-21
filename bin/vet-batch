@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Batch vet all deps from a package.json
+# Usage: vet-batch <path-to-package.json>
+set -euo pipefail
+
+PKG_JSON="${1:?Usage: vet-batch <path-to-package.json>}"
+OUT_DIR="/tmp/vet-results"
+mkdir -p "$OUT_DIR"
+
+# Extract all deps (dependencies + devDependencies)
+deps=$(jq -r '
+  ((.dependencies // {}) + (.devDependencies // {}))
+  | to_entries[] | "\(.key) \(.value)"
+' "$PKG_JSON")
+
+total=0; approved=0; blocked=0
+
+while IFS=' ' read -r name version; do
+  total=$((total + 1))
+  echo "--- [$total] Vetting $name@$version ---" >&2
+  safe_name=$(echo "$name" | sed 's|/|__|g')
+  outfile="$OUT_DIR/${safe_name}@${version}.json"
+
+  if /tmp/vet-package "$name" "$version" > "$outfile" 2>/dev/null; then
+    verdict=$(jq -r '.summary.verdict' "$outfile")
+    gates=$(jq -r '"\(.summary.gates_pass)/\(.summary.gates_total)"' "$outfile")
+    scored=$(jq -r '"\(.summary.scored_pass)/\(.summary.scored_total)"' "$outfile")
+    echo "  $verdict  gates=$gates  scored=$scored" >&2
+    [[ "$verdict" == "APPROVED" ]] && approved=$((approved + 1)) || blocked=$((blocked + 1))
+  else
+    echo "  ERROR — API failure" >&2
+    blocked=$((blocked + 1))
+  fi
+done <<< "$deps"
+
+echo "" >&2
+echo "=== BATCH SUMMARY ===" >&2
+echo "Total: $total | Approved: $approved | Blocked: $blocked" >&2
+echo "Results in: $OUT_DIR/" >&2
+
+# Output summary JSON
+jq -n --argjson total "$total" --argjson approved "$approved" --argjson blocked "$blocked" \
+  '{total: $total, approved: $approved, blocked: $blocked, results_dir: "/tmp/vet-results"}'
