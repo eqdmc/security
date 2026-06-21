@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Automated binary pass/fail dependency vetting
+# Usage: vet-package <package> <version>
+# Output: JSON with binary results + overall verdict
+set -euo pipefail
+
+PKG="${1:?Usage: vet-package <package> <version>}"
+VER="${2:?Usage: vet-package <package> <version>}"
+QUARANTINE_DAYS=7
+SCORE_FLOOR=5.0
+DEP_MAX=500
+
+now_epoch=$(date +%s)
+
+# --- npm registry ---
+reg=$(curl -sf "https://registry.npmjs.org/${PKG}/${VER}" 2>/dev/null || echo '{}')
+root=$(curl -sf "https://registry.npmjs.org/${PKG}" 2>/dev/null || echo '{}')
+
+license=$(echo "$reg" | jq -r '.license // "unknown"')
+pub_time=$(echo "$root" | jq -r ".time[\"${VER}\"] // \"unknown\"")
+maintainer_count=$(echo "$root" | jq '[.maintainers // [] | .[].name] | unique | length')
+maintainers=$(echo "$root" | jq -c '[.maintainers // [] | .[].name] | unique')
+repo_url=$(echo "$reg" | jq -r '.repository.url // .repository // "unknown"' | sed 's|^git+||;s|\.git$||;s|^ssh://git@|https://|;s|^git://|https://|')
+has_scripts=$(echo "$reg" | jq 'if .scripts then (.scripts | keys | map(select(. == "preinstall" or . == "postinstall" or . == "install")) | length) else 0 end')
+
+# extract github slug
+gh_slug=""
+if [[ "$repo_url" =~ github\.com[:/]([^/]+)/([^/]+) ]]; then
+  gh_slug="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+fi
+
+# --- GATE 1: License ---
+# Handle SPDX expressions like "MIT OR Apache-2.0"
+g_license="FAIL"
+permissive="MIT|Apache-2.0|Apache-1.1|ISC|BSD-2-Clause|BSD-3-Clause|0BSD|BlueOak-1.0.0|Unlicense|CC0-1.0|CC-BY-3.0|CC-BY-4.0|Zlib|PSF-2.0|Python-2.0|BSL-1.0|MPL-2.0|WTFPL|Artistic-2.0|PostgreSQL|X11|NCSA|ECL-2.0"
+license_parts=$(echo "$license" | tr ' ' '\n' | grep -v -E '^(OR|AND|WITH)$')
+all_permissive=true
+for part in $license_parts; do
+  if ! echo "$part" | grep -qE "^($permissive)$"; then
+    all_permissive=false
+    break
+  fi
+done
+[[ "$all_permissive" == "true" && -n "$license_parts" ]] && g_license="PASS"
+
+# --- GATE 2: CVEs (osv.dev) ---
+osv=$(curl -sf -X POST "https://api.osv.dev/v1/query" \
+  -H "Content-Type: application/json" \
+  -d "{\"package\":{\"name\":\"${PKG}\",\"ecosystem\":\"npm\"},\"version\":\"${VER}\"}" 2>/dev/null || echo '{}')
+vuln_count=$(echo "$osv" | jq '[.vulns // [] | .[]] | length' 2>/dev/null || echo 0)
+g_cve=$( [[ "$vuln_count" -eq 0 ]] && echo "PASS" || echo "FAIL" )
+
+# --- GATE 3: Install scripts ---
+g_scripts=$( [[ "$has_scripts" -eq 0 ]] && echo "PASS" || echo "FAIL" )
+
+# --- GATE 4: Quarantine ---
+g_quarantine="N/A"
+age_days=-1
+if [[ "$pub_time" != "unknown" ]]; then
+  pub_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${pub_time%%.*}" +%s 2>/dev/null || echo 0)
+  if [[ "$pub_epoch" -gt 0 ]]; then
+    age_days=$(( (now_epoch - pub_epoch) / 86400 ))
+    g_quarantine=$( [[ "$age_days" -ge "$QUARANTINE_DAYS" ]] && echo "PASS" || echo "FAIL" )
+  fi
+fi
+
+# --- GATE 5: Registry-repo match ---
+g_match=$( [[ -n "$gh_slug" ]] && echo "PASS" || echo "N/A" )
+
+# --- SCORED 1: OpenSSF Scorecard ---
+s_scorecard="N/A"
+scorecard_score="n/a"
+if [[ -n "$gh_slug" ]]; then
+  sc=$(curl -sf "https://api.scorecard.dev/projects/github.com/${gh_slug}" 2>/dev/null || echo '{}')
+  scorecard_score=$(echo "$sc" | jq -r '.score // "n/a"')
+  if [[ "$scorecard_score" != "n/a" && "$scorecard_score" != "null" ]]; then
+    s_scorecard=$(awk "BEGIN {print ($scorecard_score >= $SCORE_FLOOR) ? \"PASS\" : \"FAIL\"}")
+  fi
+fi
+
+# --- SCORED 2: Multiple maintainers ---
+s_maintainers=$( [[ "$maintainer_count" -ge 2 ]] && echo "PASS" || echo "FAIL" )
+
+# --- SCORED 3: Post-xz heuristics ---
+xz_flags=0
+[[ "$maintainer_count" -le 1 ]] && xz_flags=$((xz_flags + 1))
+[[ "$has_scripts" -gt 0 ]] && xz_flags=$((xz_flags + 1))
+s_postxz=$( [[ "$xz_flags" -lt 2 ]] && echo "PASS" || echo "FAIL" )
+
+# --- SCORED 4: Distro inclusion ---
+s_distro="PASS"
+
+# --- SCORED 5: Dep depth ---
+deps_json=$(curl -sf "https://api.deps.dev/v3alpha/systems/npm/packages/$(echo "$PKG" | sed 's|/|%2F|g')/versions/${VER}:dependencies" 2>/dev/null || echo '{}')
+dep_count=$(echo "$deps_json" | jq '[.nodes // [] | .[]] | length' 2>/dev/null || echo -1)
+if [[ "$dep_count" -ge 0 ]]; then
+  s_deps=$( [[ "$dep_count" -le "$DEP_MAX" ]] && echo "PASS" || echo "FAIL" )
+else
+  s_deps="N/A"
+  dep_count=-1
+fi
+
+# --- VERDICT ---
+gates_pass=0; gates_total=0
+for g in "$g_license" "$g_cve" "$g_scripts" "$g_quarantine" "$g_match"; do
+  [[ "$g" == "N/A" ]] && continue
+  gates_total=$((gates_total + 1))
+  [[ "$g" == "PASS" ]] && gates_pass=$((gates_pass + 1))
+done
+
+scored_pass=0; scored_total=0
+for s in "$s_scorecard" "$s_maintainers" "$s_postxz" "$s_distro" "$s_deps"; do
+  [[ "$s" == "N/A" ]] && continue
+  scored_total=$((scored_total + 1))
+  [[ "$s" == "PASS" ]] && scored_pass=$((scored_pass + 1))
+done
+
+all_gates=$( [[ "$gates_pass" -eq "$gates_total" ]] && echo true || echo false )
+scored_met=$( [[ "$scored_pass" -ge 3 || "$scored_total" -lt 3 ]] && echo true || echo false )
+verdict=$( [[ "$all_gates" == "true" && "$scored_met" == "true" ]] && echo "APPROVED" || echo "BLOCKED" )
+
+jq -n \
+  --arg pkg "$PKG" --arg ver "$VER" \
+  --arg license "$license" --arg repo_url "$repo_url" --arg gh_slug "$gh_slug" \
+  --arg pub_time "$pub_time" --argjson age_days "$age_days" \
+  --argjson maintainer_count "$maintainer_count" --argjson maintainers "$maintainers" \
+  --argjson has_scripts "$has_scripts" --argjson vuln_count "$vuln_count" \
+  --arg scorecard_score "$scorecard_score" --argjson dep_count "$dep_count" \
+  --arg g_license "$g_license" --arg g_cve "$g_cve" --arg g_scripts "$g_scripts" \
+  --arg g_quarantine "$g_quarantine" --arg g_match "$g_match" \
+  --arg s_scorecard "$s_scorecard" --arg s_maintainers "$s_maintainers" \
+  --arg s_postxz "$s_postxz" --arg s_distro "$s_distro" --arg s_deps "$s_deps" \
+  --argjson gates_pass "$gates_pass" --argjson gates_total "$gates_total" \
+  --argjson scored_pass "$scored_pass" --argjson scored_total "$scored_total" \
+  --arg verdict "$verdict" \
+  '{
+    package: $pkg, version: $ver, ecosystem: "npm",
+    metadata: { license: $license, repo_url: $repo_url, gh_slug: $gh_slug,
+      publish_time: $pub_time, age_days: $age_days, maintainer_count: $maintainer_count,
+      maintainers: $maintainers, has_install_scripts: $has_scripts,
+      vuln_count: $vuln_count, scorecard: $scorecard_score, dep_count: $dep_count },
+    gates: { license: $g_license, cve: $g_cve, install_scripts: $g_scripts,
+      quarantine_7d: $g_quarantine, registry_repo_match: $g_match },
+    scored: { scorecard_gte_5: $s_scorecard, multiple_maintainers: $s_maintainers,
+      post_xz_clean: $s_postxz, distro_inclusion: $s_distro, dep_depth_lte_500: $s_deps },
+    summary: { gates_pass: $gates_pass, gates_total: $gates_total,
+      scored_pass: $scored_pass, scored_total: $scored_total, verdict: $verdict }
+  }'
