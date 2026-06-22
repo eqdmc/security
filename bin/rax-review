@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""rax-review — monthly summary of unclassified HITL actions."""
+
+import json
+import re
+import sys
+from collections import Counter
+from pathlib import Path
+
+__version__ = "1.0.0"
+
+DEFAULT_AUDIT = Path.home() / ".rax" / "state" / "audit.jsonl"
+
+PURPOSE_CLASSIFIERS = [
+    (re.compile(r"\b(merge|admin[- ]merge)\b", re.I), "merge"),
+    (re.compile(r"\b(force[- ]push|rebase)\b", re.I), "git force-push"),
+    (re.compile(r"\b(reset.*main|sync.*main|move.*commit)\b", re.I), "git reset"),
+    (re.compile(r"\b(token|secret|credential|api[- ]?key|passphrase|sops|encrypt|decrypt)\b", re.I), "secrets"),
+    (re.compile(r"\b(deploy|release|publish|ship|push.*image|docker.*push)\b", re.I), "deploy"),
+    (re.compile(r"\b(sandbox|container|docker|sbx)\b", re.I), "sandbox ops"),
+    (re.compile(r"\b(clean ?up|remove|delete|prune)\b", re.I), "cleanup"),
+    (re.compile(r"\b(install|upgrade|update.*version)\b", re.I), "install/upgrade"),
+    (re.compile(r"\b(guard|check|ruleset|protect|enforce|2fa)\b", re.I), "github admin"),
+    (re.compile(r"\b(shell|zshrc|function|alias|symlink)\b", re.I), "shell config"),
+    (re.compile(r"\b(test|display|verify|rsax)\b", re.I), "testing"),
+    (re.compile(r"\b(chmod|permission)\b", re.I), "permissions"),
+]
+
+
+def extract_pattern(purpose: str) -> str:
+    for regex, label in PURPOSE_CLASSIFIERS:
+        if regex.search(purpose):
+            return label
+    return "other"
+
+
+def load_entries(audit_path: Path) -> list[dict]:
+    if not audit_path.exists():
+        return []
+    entries = []
+    for line in audit_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return entries
+
+
+def review(audit_path: Path) -> None:
+    entries = load_entries(audit_path)
+    if not entries:
+        print("No audit entries found.")
+        return
+
+    total = len(entries)
+    unclassified = [e for e in entries if e.get("review_needed", False) or e.get("category", "rax") == "rax"]
+    classified = [e for e in entries if not e.get("review_needed", True) and e.get("category", "rax") != "rax"]
+
+    by_category = Counter(e.get("category", "rax") for e in entries)
+
+    print(f"RAX Review")
+    print("=" * 40)
+    print()
+    print(f"Total entries:        {total}")
+    print(f"Unclassified (rax):   {len(unclassified)}")
+    print(f"Classified:           {len(classified)}")
+    print()
+
+    if by_category:
+        print("By category:")
+        for cat, count in by_category.most_common():
+            marker = " ← review" if cat == "rax" else ""
+            print(f"  {cat:<16} {count:>3} entries{marker}")
+        print()
+
+    if not unclassified:
+        print("No unclassified entries — all actions routed to domain flows.")
+        return
+
+    pattern_counts = Counter()
+    for e in unclassified:
+        pattern_counts[extract_pattern(e.get("purpose", ""))] += 1
+
+    print("Unclassified by pattern:")
+    for pattern, count in pattern_counts.most_common():
+        suggestion = ""
+        if count >= 3:
+            suggestion = f"  → candidate for dedicated flow"
+        print(f"  {pattern:<20} {count:>3} entries{suggestion}")
+
+    top = pattern_counts.most_common(1)
+    if top and top[0][1] >= 3:
+        print()
+        print(f"Recommendation: '{top[0][0]}' ({top[0][1]} entries) should become a dedicated HITL flow.")
+
+
+def main():
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print("Usage: rax-review [--audit PATH]")
+        print()
+        print("Monthly summary of unclassified HITL actions.")
+        print(f"Default audit file: {DEFAULT_AUDIT}")
+        return
+
+    if "--version" in sys.argv:
+        print(f"rax-review {__version__}")
+        return
+
+    audit_path = DEFAULT_AUDIT
+    if "--audit" in sys.argv:
+        idx = sys.argv.index("--audit")
+        if idx + 1 < len(sys.argv):
+            audit_path = Path(sys.argv[idx + 1])
+
+    review(audit_path)
+
+
+if __name__ == "__main__":
+    main()
