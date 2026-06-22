@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
-# Automated binary pass/fail dependency vetting
+# Automated binary pass/fail dependency vetting with multi-signal CVE prioritization
 # Usage: vet-package <package> <version>
-# Output: JSON with binary results + overall verdict
+# Output: JSON with binary results + CVE quadrant breakdown + overall verdict
+#
+# CVE prioritization model (CVE_Prioritizer quadrant, arxiv:2506.01220):
+#   P1+ = KEV-listed (confirmed exploited)
+#   P1  = CVSS >= 6.0 AND EPSS >= 0.2 (high severity + high exploitation probability)
+#   P2  = CVSS >= 6.0 AND EPSS < 0.2 (high severity, low exploitation probability)
+#   P3  = CVSS < 6.0 AND EPSS >= 0.2 (low severity, high exploitation probability)
+#   P4  = CVSS < 6.0 AND EPSS < 0.2 (low severity, low exploitation probability)
+#
+# Gate logic: BLOCK on any P1+ or P1. Warn on P2/P3. Accept P4.
 set -euo pipefail
 
 PKG="${1:?Usage: vet-package <package> <version>}"
@@ -9,6 +18,8 @@ VER="${2:?Usage: vet-package <package> <version>}"
 QUARANTINE_DAYS=7
 SCORE_FLOOR=5.0
 DEP_MAX=500
+EPSS_THRESHOLD=0.2
+CVSS_THRESHOLD=6.0
 
 now_epoch=$(date +%s)
 
@@ -23,14 +34,12 @@ maintainers=$(echo "$root" | jq -c '[.maintainers // [] | .[].name] | unique')
 repo_url=$(echo "$reg" | jq -r '.repository.url // .repository // "unknown"' | sed 's|^git+||;s|\.git$||;s|^ssh://git@|https://|;s|^git://|https://|')
 has_scripts=$(echo "$reg" | jq 'if .scripts then (.scripts | keys | map(select(. == "preinstall" or . == "postinstall" or . == "install")) | length) else 0 end')
 
-# extract github slug
 gh_slug=""
 if [[ "$repo_url" =~ github\.com[:/]([^/]+)/([^/]+) ]]; then
   gh_slug="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
 fi
 
 # --- GATE 1: License ---
-# Handle SPDX expressions like "MIT OR Apache-2.0"
 g_license="FAIL"
 permissive="MIT|Apache-2.0|Apache-1.1|ISC|BSD-2-Clause|BSD-3-Clause|0BSD|BlueOak-1.0.0|Unlicense|CC0-1.0|CC-BY-3.0|CC-BY-4.0|Zlib|PSF-2.0|Python-2.0|BSL-1.0|MPL-2.0|WTFPL|Artistic-2.0|PostgreSQL|X11|NCSA|ECL-2.0"
 license_parts=$(echo "$license" | tr ' ' '\n' | grep -v -E '^(OR|AND|WITH)$')
@@ -43,12 +52,103 @@ for part in $license_parts; do
 done
 [[ "$all_permissive" == "true" && -n "$license_parts" ]] && g_license="PASS"
 
-# --- GATE 2: CVEs (osv.dev) ---
+# --- GATE 2: CVEs with multi-signal prioritization (CVSS + EPSS + KEV) ---
 osv=$(curl -sf -X POST "https://api.osv.dev/v1/query" \
   -H "Content-Type: application/json" \
   -d "{\"package\":{\"name\":\"${PKG}\",\"ecosystem\":\"npm\"},\"version\":\"${VER}\"}" 2>/dev/null || echo '{}')
-vuln_count=$(echo "$osv" | jq '[.vulns // [] | .[]] | length' 2>/dev/null || echo 0)
-g_cve=$( [[ "$vuln_count" -eq 0 ]] && echo "PASS" || echo "FAIL" )
+
+vuln_total=$(echo "$osv" | jq '[.vulns // [] | .[]] | length' 2>/dev/null || echo 0)
+
+kev_json=""
+kev_loaded=false
+
+p1_plus=0
+p1=0
+p2=0
+p3=0
+p4=0
+unscored=0
+
+vuln_details="[]"
+
+severity_to_cvss() {
+  case "$1" in
+    CRITICAL) echo "9.5" ;;
+    HIGH)     echo "7.5" ;;
+    MODERATE) echo "5.5" ;;
+    MEDIUM)   echo "5.5" ;;
+    LOW)      echo "2.5" ;;
+    *)        echo "none" ;;
+  esac
+}
+
+if [[ "$vuln_total" -gt 0 ]]; then
+  kev_json=$(curl -sf "https://www.cisa.gov/sites/default/files/feeds/known-exploited-vulnerabilities.json" 2>/dev/null || echo '{}')
+  if echo "$kev_json" | jq -e '.vulnerabilities' >/dev/null 2>&1; then
+    kev_loaded=true
+  fi
+
+  details_arr="["
+  first=true
+
+  vuln_count=$(echo "$osv" | jq '[.vulns // [] | .[]] | length')
+  for i in $(seq 0 $((vuln_count - 1))); do
+    vuln_entry=$(echo "$osv" | jq ".vulns[$i]")
+    ghsa_id=$(echo "$vuln_entry" | jq -r '.id')
+    cve_id=$(echo "$vuln_entry" | jq -r '[.aliases // [] | .[] | select(startswith("CVE-"))] | first // "none"')
+    ghsa_severity=$(echo "$vuln_entry" | jq -r '.database_specific.severity // "unknown"' | tr '[:lower:]' '[:upper:]')
+
+    cvss_score=$(severity_to_cvss "$ghsa_severity")
+
+    epss_score="none"
+    if [[ "$cve_id" != "none" ]]; then
+      epss_resp=$(curl -sf "https://api.first.org/data/v1/epss?cve=${cve_id}" 2>/dev/null || echo '{}')
+      epss_score=$(echo "$epss_resp" | jq -r '.data[0].epss // "none"' 2>/dev/null)
+    fi
+
+    in_kev=false
+    if [[ "$kev_loaded" == "true" && "$cve_id" != "none" ]]; then
+      kev_match=$(echo "$kev_json" | jq -r ".vulnerabilities[] | select(.cveID == \"${cve_id}\") | .cveID" 2>/dev/null)
+      [[ -n "$kev_match" ]] && in_kev=true
+    fi
+
+    priority="P4"
+    if [[ "$in_kev" == "true" ]]; then
+      priority="P1+"; p1_plus=$((p1_plus + 1))
+    elif [[ "$cvss_score" != "none" && "$epss_score" != "none" ]]; then
+      cvss_high=$(awk "BEGIN {print ($cvss_score >= $CVSS_THRESHOLD) ? 1 : 0}")
+      epss_high=$(awk "BEGIN {print ($epss_score >= $EPSS_THRESHOLD) ? 1 : 0}")
+      if [[ "$cvss_high" -eq 1 && "$epss_high" -eq 1 ]]; then
+        priority="P1"; p1=$((p1 + 1))
+      elif [[ "$cvss_high" -eq 1 && "$epss_high" -eq 0 ]]; then
+        priority="P2"; p2=$((p2 + 1))
+      elif [[ "$cvss_high" -eq 0 && "$epss_high" -eq 1 ]]; then
+        priority="P3"; p3=$((p3 + 1))
+      else
+        priority="P4"; p4=$((p4 + 1))
+      fi
+    elif [[ "$cvss_score" != "none" ]]; then
+      cvss_high=$(awk "BEGIN {print ($cvss_score >= $CVSS_THRESHOLD) ? 1 : 0}")
+      if [[ "$cvss_high" -eq 1 ]]; then
+        priority="P2"; p2=$((p2 + 1))
+      else
+        priority="P4"; p4=$((p4 + 1))
+      fi
+    else
+      priority="unscored"; unscored=$((unscored + 1))
+    fi
+
+    [[ "$first" == "true" ]] && first=false || details_arr="${details_arr},"
+    summary_text=$(echo "$vuln_entry" | jq -r '.summary // "no summary"' | tr '"' "'")
+    details_arr="${details_arr}{\"id\":\"${ghsa_id}\",\"cve\":\"${cve_id}\",\"severity\":\"${ghsa_severity}\",\"cvss_est\":\"${cvss_score}\",\"epss\":\"${epss_score}\",\"kev\":${in_kev},\"priority\":\"${priority}\",\"summary\":\"${summary_text}\"}"
+  done
+
+  details_arr="${details_arr}]"
+  vuln_details="$details_arr"
+fi
+
+blocking=$((p1_plus + p1))
+g_cve=$( [[ "$blocking" -eq 0 ]] && echo "PASS" || echo "FAIL" )
 
 # --- GATE 3: Install scripts ---
 g_scripts=$( [[ "$has_scripts" -eq 0 ]] && echo "PASS" || echo "FAIL" )
@@ -124,7 +224,12 @@ jq -n \
   --arg license "$license" --arg repo_url "$repo_url" --arg gh_slug "$gh_slug" \
   --arg pub_time "$pub_time" --argjson age_days "$age_days" \
   --argjson maintainer_count "$maintainer_count" --argjson maintainers "$maintainers" \
-  --argjson has_scripts "$has_scripts" --argjson vuln_count "$vuln_count" \
+  --argjson has_scripts "$has_scripts" \
+  --argjson vuln_total "$vuln_total" \
+  --argjson p1_plus "$p1_plus" --argjson p1 "$p1" --argjson p2 "$p2" \
+  --argjson p3 "$p3" --argjson p4 "$p4" --argjson unscored "$unscored" \
+  --argjson blocking "$blocking" \
+  --argjson vuln_details "$vuln_details" \
   --arg scorecard_score "$scorecard_score" --argjson dep_count "$dep_count" \
   --arg g_license "$g_license" --arg g_cve "$g_cve" --arg g_scripts "$g_scripts" \
   --arg g_quarantine "$g_quarantine" --arg g_match "$g_match" \
@@ -138,7 +243,14 @@ jq -n \
     metadata: { license: $license, repo_url: $repo_url, gh_slug: $gh_slug,
       publish_time: $pub_time, age_days: $age_days, maintainer_count: $maintainer_count,
       maintainers: $maintainers, has_install_scripts: $has_scripts,
-      vuln_count: $vuln_count, scorecard: $scorecard_score, dep_count: $dep_count },
+      scorecard: $scorecard_score, dep_count: $dep_count },
+    vulns: {
+      total: $vuln_total,
+      quadrant: { "P1+_kev": $p1_plus, "P1_high_likely": $p1, "P2_high_unlikely": $p2,
+        "P3_low_likely": $p3, "P4_low_unlikely": $p4, unscored: $unscored },
+      blocking: $blocking,
+      details: $vuln_details
+    },
     gates: { license: $g_license, cve: $g_cve, install_scripts: $g_scripts,
       quarantine_7d: $g_quarantine, registry_repo_match: $g_match },
     scored: { scorecard_gte_5: $s_scorecard, multiple_maintainers: $s_maintainers,
