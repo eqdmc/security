@@ -1,0 +1,97 @@
+version: 1
+
+# Score threshold: at or above → must type "yes". Below → y/N prompt.
+high_risk_threshold: 50
+
+# Protected path patterns — rax refuses to run if the action writes to these.
+# Each harness's config directory is listed; add your own as needed.
+protected_patterns:
+  - '>\s*~/\.(claude|opencode)/(settings\.json|rules/|skills/|agents/|commands/)'
+  - 'config-unlock'
+  - '>\s*~/\.rax/policy\.yml'
+
+# Danger findings — evaluated in order. All matching rules fire (not first-match).
+findings:
+  - pattern: '\brm\s+-(rf|fr)\s+/'
+    points: 30
+    level: critical
+    message: "rm -rf on root path"
+    detail: "Deletes files recursively — verify the exact path"
+
+  - pattern: '\bsudo\s'
+    points: 30
+    level: critical
+    message: "uses sudo"
+    detail: "Elevated privileges — is this genuinely necessary?"
+
+  - pattern: 'curl.*\|\s*(ba)?sh|wget.*\|\s*(ba)?sh'
+    points: 30
+    level: critical
+    message: "pipes URL to shell"
+    detail: "Remote code execution — verify the URL is trusted"
+
+  - pattern: '\beval\s'
+    points: 30
+    level: critical
+    message: "uses eval"
+    detail: "Arbitrary code execution — verify the evaluated string"
+
+  - pattern: 'git\s+push\s+--force'
+    points: 20
+    level: high
+    message: "git force push"
+    detail: "Overwrites remote history — cannot be undone"
+
+  - pattern: 'git\s+reset\s+--hard'
+    points: 20
+    level: high
+    message: "git hard reset"
+    detail: "Discards uncommitted changes permanently"
+
+  - pattern: 'chmod\s+777'
+    points: 20
+    level: high
+    message: "chmod 777"
+    detail: "World-writable — security risk"
+
+  - pattern: '>\s*~/\.(ssh|gnupg)'
+    points: 20
+    level: high
+    message: "writes to sensitive dotfile"
+    detail: "Modifies security-critical config"
+
+  - pattern: '>\s*~/\.(zshrc|zprofile|bashrc|bash_profile)'
+    points: 15
+    level: high
+    message: "modifies shell config"
+    detail: "Changes apply to all future shell sessions"
+
+  - pattern: '(?i)password|secret|token|api.key'
+    points: 10
+    level: medium
+    message: "handles credentials"
+    detail: "Verify secrets stored securely (0600 perms)"
+
+  - pattern: 'brew\s+install|pip3?\s+install|npm\s+install\s+-g'
+    points: 10
+    level: medium
+    message: "installs packages"
+    detail: "New dependency — vetting required"
+
+  - pattern: 'launchctl\s+(load|unload)'
+    points: 5
+    level: medium
+    message: "modifies launchd"
+    detail: "Service change persists across reboots"
+
+  - pattern: '\bchmod\s'
+    points: 5
+    level: medium
+    message: "changes permissions"
+    detail: "Verify target path and mode"
+
+  - pattern: '\b(curl|wget)\s'
+    points: 5
+    level: low
+    message: "network requests"
+    detail: "Verify target domain is trusted"

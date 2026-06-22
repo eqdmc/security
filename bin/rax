@@ -1,0 +1,589 @@
+#!/bin/bash
+# rax — Run staged Action eXecution
+#
+# Portable HITL approval tool for dangerous agent-initiated actions.
+# Works with any harness (Claude Code, OpenCode, Cursor, etc.),
+# any environment (local, Docker, VPS).
+#
+# Configuration is 100% via env vars — the harness sets them at session start:
+#   RAX_PENDING_FILE  — where to read the staged action
+#   RAX_STATE_DIR     — directory for result + log files
+#   RAX_RESULT_FILE   — structured result (harness adapter reads this)
+#   RAX_AUDIT_FILE    — append-only audit log
+#   RAX_SESSION_ID    — session correlation
+#   RAX_POLICY_FILE   — danger patterns + thresholds (YAML)
+set -euo pipefail
+
+RAX_VERSION="2.0.0"
+
+# --- Args ---
+if [ "${1:-}" = "--version" ]; then
+    echo "rax $RAX_VERSION"
+    exit 0
+fi
+
+if [ "${1:-}" = "--show-policy" ]; then
+    POLICY_FILE="${RAX_POLICY_FILE:-$HOME/.rax/policy.yml}"
+    echo "Policy: $POLICY_FILE"
+    if [ -f "$POLICY_FILE" ]; then
+        cat "$POLICY_FILE"
+    else
+        echo "(no policy file — using hardcoded defaults)"
+    fi
+    exit 0
+fi
+
+# --- Paths (all env-var driven, sensible defaults) ---
+RAX_STATE_DIR="${RAX_STATE_DIR:-$HOME/.rax/state}"
+ACTION="${RAX_PENDING_FILE:-$HOME/.rax/pending.sh}"
+RESULT_FILE="${RAX_RESULT_FILE:-$RAX_STATE_DIR/last-result.json}"
+AUDIT_FILE="${RAX_AUDIT_FILE:-$RAX_STATE_DIR/audit.jsonl}"
+SESSION_ID="${RAX_SESSION_ID:-unknown}"
+POLICY_FILE="${RAX_POLICY_FILE:-$HOME/.rax/policy.yml}"
+
+mkdir -p "$RAX_STATE_DIR"
+
+if [ ! -f "$ACTION" ]; then
+    echo "No pending action."
+    exit 0
+fi
+
+# --- ANSI colors ---
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+WHITE='\033[0;37m'
+DIM='\033[38;5;242m'
+BOLD='\033[1m'
+RESET='\033[0m'
+CHECK='\xE2\x9C\x94'
+CROSS='\xE2\x9C\x98'
+WARN_ICON='\xE2\x9A\xA0'
+
+# --- Extract metadata ---
+extract_header() {
+    local key="$1" file="$2"
+    awk -v k="$key" '
+        match($0, "^[[:space:]]*#[[:space:]]*" k "[[:space:]]*:[[:space:]]*") {
+            val = substr($0, RSTART + RLENGTH)
+            sub(/[[:space:]]+$/, "", val)
+            print val
+            exit
+        }
+    ' "$file" 2>/dev/null
+}
+
+PURPOSE=$(extract_header "Purpose" "$ACTION")
+DESCRIPTION=$(extract_header "Description" "$ACTION")
+VERIFY_CMD=$(extract_header "Verify" "$ACTION")
+ROLLBACK_CMD=$(extract_header "Rollback" "$ACTION")
+ISSUE=$(extract_header "Issue" "$ACTION" | sed 's/^#*//' | awk '{print $1}')
+ACTION_ID=$(extract_header "Action-ID" "$ACTION")
+if [ -z "$ACTION_ID" ]; then
+    ACTION_ID="rsax-$(date +%Y-%m-%d)-adhoc-$(date +%s | tail -c 5)"
+fi
+
+# --- Validation warnings ---
+VALIDATION_WARNINGS=""
+if [ -z "$PURPOSE" ]; then
+    VALIDATION_WARNINGS="${VALIDATION_WARNINGS}$(printf "  ${RED}${CROSS} Missing # Purpose: header — action has no description${RESET}")\n"
+fi
+if [ -z "$VERIFY_CMD" ]; then
+    VALIDATION_WARNINGS="${VALIDATION_WARNINGS}$(printf "  ${YELLOW}${WARN_ICON} No # Verify: header — action cannot be automatically confirmed${RESET}")\n"
+fi
+if [ -z "$ROLLBACK_CMD" ]; then
+    VALIDATION_WARNINGS="${VALIDATION_WARNINGS}$(printf "  ${YELLOW}${WARN_ICON} No # Rollback: header — action may not be reversible${RESET}")\n"
+fi
+
+# --- Protected path check ---
+# Load protected patterns from policy file if it exists, else use defaults.
+# Protected paths are things rax refuses to touch (harness config, etc.).
+CODE_ONLY=$(grep -v '^\s*#' "$ACTION" || true)
+PROTECTED_BLOCKED=false
+
+if [ -f "$POLICY_FILE" ]; then
+    while IFS= read -r pattern; do
+        [ -z "$pattern" ] && continue
+        if echo "$CODE_ONLY" | grep -qE "$pattern"; then
+            PROTECTED_BLOCKED=true
+            break
+        fi
+    done < <(python3 -c "
+import sys, json
+try:
+    import yaml
+    policy = yaml.safe_load(open('$POLICY_FILE'))
+except ImportError:
+    # No PyYAML — parse protected_patterns manually
+    policy = {}
+    with open('$POLICY_FILE') as f:
+        in_protected = False
+        for line in f:
+            stripped = line.strip()
+            if stripped == 'protected_patterns:':
+                in_protected = True
+                continue
+            if in_protected:
+                if stripped.startswith('- '):
+                    val = stripped[2:].strip().strip(\"'\").strip('\"')
+                    print(val)
+                elif stripped and not stripped.startswith('#'):
+                    break
+" 2>/dev/null)
+fi
+
+if ! $PROTECTED_BLOCKED; then
+    if echo "$CODE_ONLY" | grep -qE '>\s*~/\.(claude|opencode)/(settings\.json|rules/|skills/|agents/|commands/)' || \
+       echo "$CODE_ONLY" | grep -qE 'config-unlock'; then
+        PROTECTED_BLOCKED=true
+    fi
+fi
+
+if $PROTECTED_BLOCKED; then
+    echo ""
+    printf "${RED}${BOLD}BLOCKED:${RESET} This action edits protected config files.\n"
+    printf "Use your harness's config-unlock mechanism instead of rax.\n"
+    printf "${DIM}rax is for privileged commands (brew, chmod, secrets, git destructive).\n"
+    printf "config-unlock grants the agent permission to edit config directly.${RESET}\n"
+    exit 1
+fi
+
+# ━━━ HEADER ━━━
+echo ""
+printf "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
+printf "${BOLD}${MAGENTA}  RUN — STAGED ACTION${RESET}\n"
+printf "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
+
+wrap_at_col16() {
+    echo "$1" | fold -s -w 60 | awk 'NR==1{print; next}{printf "                %s\n", $0}'
+}
+
+# ─── ACTION ───
+echo ""
+printf "${CYAN}───── ACTION ──────────────────────────────────────────────${RESET}\n"
+echo ""
+printf "  ${DIM}Action ID:    %s${RESET}\n" "$ACTION_ID"
+echo ""
+printf "  ${BOLD}Title:${RESET}        "
+wrap_at_col16 "${PURPOSE:-<no purpose provided>}"
+
+if [ -n "$DESCRIPTION" ]; then
+    echo ""
+    printf "  ${BOLD}Description:${RESET}  "
+    wrap_at_col16 "$DESCRIPTION"
+fi
+
+if [ -n "$VERIFY_CMD" ]; then
+    echo ""
+    printf "  ${BOLD}Verify:${RESET}       Runs after action completes to confirm it worked.\n"
+    printf "                ${CYAN}"
+    wrap_at_col16 "$VERIFY_CMD"
+    printf "${RESET}                ${DIM}Exit 0 = pass, non-zero = fail.${RESET}\n"
+fi
+if [ -n "$ROLLBACK_CMD" ]; then
+    echo ""
+    printf "  ${BOLD}Rollback:${RESET}     If something goes wrong, undo with:\n"
+    printf "                ${YELLOW}"
+    wrap_at_col16 "$ROLLBACK_CMD"
+    printf "${RESET}"
+fi
+if [ -n "$ISSUE" ]; then
+    echo ""
+    printf "  ${BOLD}Issue:${RESET}        #${ISSUE} ${DIM}— result will auto-comment if gh + issue-verify available${RESET}\n"
+fi
+
+if [ -n "$VALIDATION_WARNINGS" ]; then
+    echo ""
+    printf "$VALIDATION_WARNINGS"
+fi
+
+# ─── CODE ───
+echo ""
+printf "${BLUE}───── CODE ────────────────────────────────────────────────${RESET}\n"
+echo ""
+
+tmp_code="$(mktemp -t rax-code.XXXXXX)"
+awk '
+BEGIN { in_header=1 }
+/^#!/ { next }
+/^# / && in_header { next }
+/^set -euo/ { next }
+/^$/ && in_header { next }
+{ in_header=0; print }
+' "$ACTION" > "$tmp_code"
+
+if command -v bat >/dev/null 2>&1; then
+    bat \
+        --language=bash \
+        --style=numbers \
+        --color=always \
+        --paging=never \
+        --wrap=auto \
+        "$tmp_code" 2>/dev/null | sed 's/^/  /'
+else
+    awk '
+BEGIN { in_header=1; line=0; width=70 }
+/^#!/ { next }
+/^# / && in_header { next }
+/^set -euo/ { next }
+/^$/ && in_header { next }
+
+function wrap_break(s, w,    i) {
+    for (i = w; i > w * 3 / 4; i--) {
+        if (substr(s, i, 1) == " ") return i
+    }
+    return 0
+}
+
+{
+    in_header=0
+    line++
+    content = $0
+
+    match(content, /^[[:space:]]*/)
+    leading = substr(content, 1, RLENGTH)
+    is_comment = (content ~ /^[[:space:]]*#/)
+
+    if (length(content) <= width) {
+        if (is_comment) {
+            printf "  \033[38;5;242m%2d  %s\033[0m\n", line, content
+        } else {
+            printf "  \033[38;5;242m%2d\033[0m  %s\n", line, content
+        }
+        next
+    }
+
+    brk = wrap_break(content, width)
+    if (brk > 0) {
+        first = substr(content, 1, brk - 1)
+        rest = substr(content, brk + 1)
+    } else {
+        first = substr(content, 1, width)
+        rest = substr(content, width + 1)
+    }
+    if (is_comment) {
+        printf "  \033[38;5;242m%2d  %s\033[0m\n", line, first
+    } else {
+        printf "  \033[38;5;242m%2d\033[0m  %s\n", line, first
+    }
+
+    cont_width = width - length(leading)
+    if (cont_width < 20) cont_width = 20
+    while (length(rest) > 0) {
+        if (length(rest) <= cont_width) {
+            printf "  \033[38;5;242m  \033[0m  %s%s\n", leading, rest
+            rest = ""
+        } else {
+            sbrk = wrap_break(rest, cont_width)
+            if (sbrk > 0) {
+                seg = substr(rest, 1, sbrk - 1)
+                rest = substr(rest, sbrk + 1)
+            } else {
+                seg = substr(rest, 1, cont_width)
+                rest = substr(rest, cont_width + 1)
+            }
+            printf "  \033[38;5;242m  \033[0m  %s%s\n", leading, seg
+        }
+    }
+}
+' "$tmp_code"
+fi
+rm -f "$tmp_code"
+
+# --- Risk audit ---
+DANGER=0
+FINDINGS=""
+
+finding() {
+    local points="$1" level="$2" msg="$3" detail="$4"
+    DANGER=$((DANGER + points))
+    case "$level" in
+        critical) color="$RED" ;;
+        high)     color="$YELLOW" ;;
+        medium)   color="$CYAN" ;;
+        low)      color="$BLUE" ;;
+        *)        color="$RESET" ;;
+    esac
+    FINDINGS="${FINDINGS}$(printf "  ${color}${BOLD}+%-3d${RESET} ${color}[%s]${RESET}  %s" "$points" "$level" "$msg")\n"
+    if [ -n "$detail" ]; then
+        FINDINGS="${FINDINGS}$(printf "       ${DIM}%s${RESET}" "$detail")\n"
+    fi
+}
+
+# Load findings from policy file if available — uses Python regex (not grep)
+# so PCRE-style patterns like (?i) and \b work correctly.
+_ran_policy_findings=false
+if [ -f "$POLICY_FILE" ]; then
+    while IFS='|' read -r points level message detail; do
+        [ -z "$points" ] && continue
+        finding "$points" "$level" "$message" "$detail"
+    done < <(python3 -c "
+import re, sys
+
+code = sys.stdin.read()
+
+# Parse policy YAML (try PyYAML, fall back to manual parse)
+policy = None
+try:
+    import yaml
+    policy = yaml.safe_load(open('$POLICY_FILE'))
+except ImportError:
+    # Manual parse for findings section
+    findings = []
+    with open('$POLICY_FILE') as f:
+        in_findings = False
+        current = {}
+        for line in f:
+            stripped = line.strip()
+            if stripped == 'findings:':
+                in_findings = True
+                continue
+            if not in_findings:
+                continue
+            if stripped.startswith('- pattern:'):
+                if current:
+                    findings.append(current)
+                current = {'pattern': stripped.split(':', 1)[1].strip().strip(\"'\").strip('\"')}
+            elif stripped.startswith('points:') and current:
+                current['points'] = int(stripped.split(':', 1)[1].strip())
+            elif stripped.startswith('level:') and current:
+                current['level'] = stripped.split(':', 1)[1].strip()
+            elif stripped.startswith('message:') and current:
+                current['message'] = stripped.split(':', 1)[1].strip().strip('\"')
+            elif stripped.startswith('detail:') and current:
+                current['detail'] = stripped.split(':', 1)[1].strip().strip('\"')
+        if current:
+            findings.append(current)
+    policy = {'findings': findings}
+
+if policy and 'findings' in policy:
+    for f in policy['findings']:
+        pattern = f.get('pattern', '')
+        if not pattern:
+            continue
+        if re.search(pattern, code):
+            print('%s|%s|%s|%s' % (
+                f.get('points', 0), f.get('level', 'medium'),
+                f.get('message', ''), f.get('detail', '')))
+" <<< "$CODE_ONLY" 2>/dev/null) && _ran_policy_findings=true
+fi
+
+if ! $_ran_policy_findings; then
+    echo "$CODE_ONLY" | grep -qE '\brm\s+-(rf|fr)\s+/' && \
+        finding 30 critical "rm -rf on root path" "Deletes files recursively — verify the exact path"
+    echo "$CODE_ONLY" | grep -qE '\bsudo\s' && \
+        finding 30 critical "uses sudo" "Elevated privileges — is this genuinely necessary?"
+    echo "$CODE_ONLY" | grep -qE 'curl.*\|\s*(ba)?sh|wget.*\|\s*(ba)?sh' && \
+        finding 30 critical "pipes URL to shell" "Remote code execution — verify the URL is trusted"
+    echo "$CODE_ONLY" | grep -qE '\beval\s' && \
+        finding 30 critical "uses eval" "Arbitrary code execution — verify the evaluated string"
+    echo "$CODE_ONLY" | grep -qE 'git\s+push\s+--force' && \
+        finding 20 high "git force push" "Overwrites remote history — cannot be undone"
+    echo "$CODE_ONLY" | grep -qE 'git\s+reset\s+--hard' && \
+        finding 20 high "git hard reset" "Discards uncommitted changes permanently"
+    echo "$CODE_ONLY" | grep -qE 'chmod\s+777' && \
+        finding 20 high "chmod 777" "World-writable — security risk"
+    echo "$CODE_ONLY" | grep -qE '>\s*~/\.(ssh|gnupg|claude/settings)' && \
+        finding 20 high "writes to sensitive dotfile" "Modifies security-critical config"
+    echo "$CODE_ONLY" | grep -qE '>\s*~/\.zshrc|>\s*~/\.zprofile' && \
+        finding 15 high "modifies shell config" "Changes apply to all future shell sessions"
+    echo "$CODE_ONLY" | grep -qiE 'password|secret|token|api.key' && \
+        finding 10 medium "handles credentials" "Verify secrets stored securely (0600 perms)"
+    echo "$CODE_ONLY" | grep -qE 'brew\s+install|pip3?\s+install|npm\s+install\s+-g' && \
+        finding 10 medium "installs packages" "New dependency — native alternative?"
+    echo "$CODE_ONLY" | grep -qE 'launchctl\s+load|launchctl\s+unload' && \
+        finding 5 medium "modifies launchd" "Service change persists across reboots"
+    echo "$CODE_ONLY" | grep -qE '\bchmod\s' && \
+        finding 5 medium "changes permissions" "Verify target path and mode"
+    echo "$CODE_ONLY" | grep -qE '\bcurl\s|\bwget\s' && \
+        finding 5 low "network requests" "Verify target domain is trusted"
+fi
+
+[ $DANGER -gt 100 ] && DANGER=100
+
+# Load threshold from policy or use default
+HIGH_RISK_THRESHOLD=50
+if [ -f "$POLICY_FILE" ]; then
+    _threshold=$(python3 -c "
+try:
+    import yaml
+    print(yaml.safe_load(open('$POLICY_FILE')).get('high_risk_threshold', 50))
+except:
+    print(50)
+" 2>/dev/null)
+    [ -n "$_threshold" ] && HIGH_RISK_THRESHOLD="$_threshold"
+fi
+
+# ─── RISK ASSESSMENT ───
+echo ""
+printf "${YELLOW}───── RISK ASSESSMENT ─────────────────────────────────────${RESET}\n"
+echo ""
+
+if [ $DANGER -eq 0 ]; then
+    printf "  ${GREEN}${BOLD}Risk: %d/100 — safe${RESET}  ${DIM}(no findings)${RESET}\n" "$DANGER"
+elif [ $DANGER -le 20 ]; then
+    printf "  ${GREEN}Risk: %d/100 — low risk${RESET}\n" "$DANGER"
+elif [ $DANGER -le $HIGH_RISK_THRESHOLD ]; then
+    printf "  ${YELLOW}Risk: %d/100 — review findings below${RESET}\n" "$DANGER"
+else
+    printf "  ${RED}${BOLD}Risk: %d/100 — HIGH RISK — read every line of CODE above${RESET}\n" "$DANGER"
+fi
+
+if [ -n "$FINDINGS" ]; then
+    echo ""
+    printf "$FINDINGS"
+fi
+
+# ─── CONFIRMATION ───
+echo ""
+printf "${GREEN}───── CONFIRMATION ────────────────────────────────────────${RESET}\n"
+echo ""
+
+if [ $DANGER -gt $HIGH_RISK_THRESHOLD ]; then
+    printf "  ${RED}${BOLD}Type 'yes' to execute:${RESET} "
+    read -r confirm
+    [[ "$confirm" != "yes" ]] && { echo "  Cancelled."; exit 1; }
+else
+    printf "  Execute? [y/N] "
+    read -r confirm
+    [[ "$confirm" != [yY] ]] && { echo "  Cancelled."; exit 1; }
+fi
+
+# ─── RUNNING... ───
+echo ""
+printf "${MAGENTA}───── RUNNING... ──────────────────────────────────────────${RESET}\n"
+echo ""
+
+LOGFILE="$RAX_STATE_DIR/last-action-log.txt"
+( source "$ACTION" ) 2>&1 | tee "$LOGFILE"
+status=${PIPESTATUS[0]}
+
+rm -f "$ACTION"
+
+# ─── VERIFY ───
+verify_status=""
+echo ""
+printf "${BLUE}───── VERIFY ──────────────────────────────────────────────${RESET}\n"
+if [ $status -ne 0 ]; then
+    printf "  ${RED}${BOLD}${CROSS} FAILED${RESET} (exit %d)  ${DIM}— action did not complete${RESET}\n" "$status"
+    if [ -n "$ROLLBACK_CMD" ]; then
+        printf "  ${YELLOW}To undo: %s${RESET}\n" "$ROLLBACK_CMD"
+    fi
+elif [ -n "$VERIFY_CMD" ]; then
+    printf "  ${DIM}Checking the action produced the expected result...${RESET}\n"
+    printf "  ${DIM}Running: %s${RESET}\n" "$VERIFY_CMD"
+    echo ""
+    if eval "$VERIFY_CMD" >> "$LOGFILE" 2>&1; then
+        verify_status=0
+        printf "  ${GREEN}${BOLD}${CHECK} COMPLETED${RESET}  ${DIM}— action ran and verification passed${RESET}\n"
+    else
+        verify_status=$?
+        printf "  ${RED}${BOLD}${CROSS} VERIFY FAILED${RESET}  ${DIM}— action ran but verification exited %d${RESET}\n" "$verify_status"
+        if [ -n "$ROLLBACK_CMD" ]; then
+            printf "  ${YELLOW}To undo: %s${RESET}\n" "$ROLLBACK_CMD"
+        fi
+    fi
+else
+    printf "  ${GREEN}${BOLD}${CHECK} COMPLETED${RESET}  ${DIM}— action ran (no verify command provided)${RESET}\n"
+fi
+
+# --- Write result + audit trail ---
+export OUTPUT_TAIL="$(tail -30 "$LOGFILE" 2>/dev/null || echo "(no output)")"
+
+python3 - "$RESULT_FILE" "$status" "$PURPOSE" "${verify_status:-}" "${ROLLBACK_CMD:-}" "$ACTION_ID" "$DANGER" "$SESSION_ID" "$AUDIT_FILE" <<'PYEOF'
+import json, sys, time, os
+
+entry = {
+    "ts": int(time.time()),
+    "action_id": sys.argv[6],
+    "exit": int(sys.argv[2]),
+    "purpose": sys.argv[3],
+    "danger_score": int(sys.argv[7]),
+    "session_id": sys.argv[8],
+    "output_tail": os.environ.get("OUTPUT_TAIL", "")[:2000],
+}
+verify = sys.argv[4]
+if verify:
+    try:
+        entry["verify_exit"] = int(verify)
+    except ValueError:
+        pass
+rollback = sys.argv[5]
+if rollback:
+    entry["rollback"] = rollback
+
+result_path = sys.argv[1]
+os.makedirs(os.path.dirname(result_path), exist_ok=True)
+with open(result_path, "w") as f:
+    json.dump(entry, f)
+
+audit_path = sys.argv[9]
+os.makedirs(os.path.dirname(audit_path), exist_ok=True)
+audit_entry = {k: v for k, v in entry.items() if k != "output_tail"}
+with open(audit_path, "a") as f:
+    f.write(json.dumps(audit_entry) + "\n")
+PYEOF
+
+# ─── ISSUE LINK ───
+if [ -n "$ISSUE" ] && [ "$status" -eq 0 ] && command -v gh >/dev/null 2>&1; then
+    echo ""
+    printf "${CYAN}───── ISSUE LINK ──────────────────────────────────────────${RESET}\n"
+    echo ""
+    # Try issue-verify if available (check common locations)
+    ISSUE_VERIFY=""
+    for iv_path in "$(dirname "$0")/issue-verify" "$HOME/.local/bin/issue-verify"; do
+        if [ -f "$iv_path" ]; then
+            ISSUE_VERIFY="$iv_path"
+            break
+        fi
+    done
+
+    if [ -n "$ISSUE_VERIFY" ]; then
+        if python3 "$ISSUE_VERIFY" "$ISSUE" --comment >/dev/null 2>&1; then
+            printf "  ${GREEN}${BOLD}${CHECK} #${ISSUE}:${RESET} all runnable criteria pass, comment posted\n"
+        else
+            iv_exit=$?
+            if [ "$iv_exit" = "2" ]; then
+                if gh issue comment "$ISSUE" \
+                    --body "rsax \`$ACTION_ID\`: completed — $PURPOSE" >/dev/null 2>&1; then
+                    printf "  ${GREEN}${CHECK} #${ISSUE}:${RESET} posted rsax confirmation ${DIM}(no formal criteria)${RESET}\n"
+                fi
+            else
+                printf "  ${YELLOW}${WARN_ICON} #${ISSUE}:${RESET} issue-verify found failing criteria ${DIM}(exit $iv_exit)${RESET}\n"
+            fi
+        fi
+    else
+        if gh issue comment "$ISSUE" \
+            --body "rsax \`$ACTION_ID\`: completed — $PURPOSE" >/dev/null 2>&1; then
+            printf "  ${GREEN}${CHECK} #${ISSUE}:${RESET} posted rsax confirmation\n"
+        fi
+    fi
+fi
+
+# Machine-readable summary — agent parses this from `! rax` output directly.
+if [ $status -eq 0 ]; then
+    if [ "${verify_status:-}" = "0" ]; then
+        echo "[RSAX:completed,verified] purpose=\"$PURPOSE\" exit=0 verify=0 id=$ACTION_ID"
+    elif [ -n "${verify_status:-}" ]; then
+        echo "[RSAX:completed,verify_failed] purpose=\"$PURPOSE\" exit=0 verify=$verify_status id=$ACTION_ID"
+    else
+        echo "[RSAX:completed] purpose=\"$PURPOSE\" exit=0 id=$ACTION_ID"
+    fi
+else
+    echo "[RSAX:failed] purpose=\"$PURPOSE\" exit=$status id=$ACTION_ID"
+fi
+
+# ─── NEXT STEPS ───
+echo ""
+printf "${WHITE}───── NEXT STEPS ──────────────────────────────────────────${RESET}\n"
+echo ""
+printf "  ${DIM}The agent can see this output directly. No copy-paste needed.${RESET}\n"
+printf "  ${DIM}Just continue your conversation.${RESET}\n"
+echo ""
+printf "  ${DIM}Audit:     %s${RESET}\n" "$AUDIT_FILE"
+printf "  ${DIM}Action ID: %s${RESET}\n" "$ACTION_ID"
+
+exit $status
