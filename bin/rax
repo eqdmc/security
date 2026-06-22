@@ -490,12 +490,28 @@ else
     printf "  ${GREEN}${BOLD}${CHECK} COMPLETED${RESET}  ${DIM}— action ran (no verify command provided)${RESET}\n"
 fi
 
+# --- Classify action ---
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+if [ -z "${RAX_CATEGORY:-}" ]; then
+    RAX_CATEGORY="$(PYTHONPATH="$REPO_DIR" python3 -c "
+try:
+    from lib.hitl_router import classify_action
+    from pathlib import Path
+    print(classify_action(Path('$ACTION')))
+except Exception:
+    print('rax')
+" 2>/dev/null || echo "rax")"
+fi
+export RAX_CATEGORY="${RAX_CATEGORY:-rax}"
+
 # --- Write result + audit trail ---
 export OUTPUT_TAIL="$(tail -30 "$LOGFILE" 2>/dev/null || echo "(no output)")"
 
-python3 - "$RESULT_FILE" "$status" "$PURPOSE" "${verify_status:-}" "${ROLLBACK_CMD:-}" "$ACTION_ID" "$DANGER" "$SESSION_ID" "$AUDIT_FILE" <<'PYEOF'
+python3 - "$RESULT_FILE" "$status" "$PURPOSE" "${verify_status:-}" "${ROLLBACK_CMD:-}" "$ACTION_ID" "$DANGER" "$SESSION_ID" "$AUDIT_FILE" "$RAX_CATEGORY" <<'PYEOF'
 import json, sys, time, os
 
+category = sys.argv[10] if len(sys.argv) > 10 else os.environ.get("RAX_CATEGORY", "rax")
 entry = {
     "ts": int(time.time()),
     "action_id": sys.argv[6],
@@ -503,6 +519,9 @@ entry = {
     "purpose": sys.argv[3],
     "danger_score": int(sys.argv[7]),
     "session_id": sys.argv[8],
+    "category": category,
+    "classified_by": "router" if category != "rax" else "default",
+    "review_needed": category == "rax",
     "output_tail": os.environ.get("OUTPUT_TAIL", "")[:2000],
 }
 verify = sys.argv[4]
