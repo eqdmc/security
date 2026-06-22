@@ -1,0 +1,84 @@
+#!/bin/bash
+# rax-install — install rax and default policy to ~/.local/bin and ~/.rax
+#
+# Requires: gh CLI (authenticated), or manual download from GitHub Releases.
+# Usage: bash bin/rax-install [--version v2.0.0] [--bin-dir ~/.local/bin]
+set -euo pipefail
+
+RAX_VERSION="${RAX_VERSION:-latest}"
+RAX_BIN_DIR="${RAX_BIN_DIR:-$HOME/.local/bin}"
+RAX_CONFIG_DIR="${RAX_CONFIG_DIR:-$HOME/.rax}"
+REPO="eqdmc/security"
+
+# Parse args
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --version) RAX_VERSION="$2"; shift 2 ;;
+        --bin-dir) RAX_BIN_DIR="$2"; shift 2 ;;
+        --config-dir) RAX_CONFIG_DIR="$2"; shift 2 ;;
+        --help|-h)
+            echo "Usage: rax-install [--version TAG] [--bin-dir DIR] [--config-dir DIR]"
+            echo ""
+            echo "Installs rax (HITL approval tool) and default policy."
+            echo ""
+            echo "Options:"
+            echo "  --version    GitHub release tag (default: latest)"
+            echo "  --bin-dir    Install binary here (default: ~/.local/bin)"
+            echo "  --config-dir Policy + state dir (default: ~/.rax)"
+            exit 0
+            ;;
+        *) echo "Unknown arg: $1"; exit 1 ;;
+    esac
+done
+
+# Check gh CLI
+if ! command -v gh >/dev/null 2>&1; then
+    echo "ERROR: gh CLI required. Install: https://cli.github.com"
+    exit 1
+fi
+
+if ! gh auth status >/dev/null 2>&1; then
+    echo "ERROR: gh not authenticated. Run: gh auth login"
+    exit 1
+fi
+
+echo "==> Installing rax $RAX_VERSION"
+echo "    Binary:  $RAX_BIN_DIR/rax"
+echo "    Config:  $RAX_CONFIG_DIR/"
+
+# Create dirs
+mkdir -p "$RAX_BIN_DIR" "$RAX_CONFIG_DIR/state"
+
+# Download binary
+if [ "$RAX_VERSION" = "latest" ]; then
+    gh release download --repo "$REPO" --pattern "rax" --output "$RAX_BIN_DIR/rax" --clobber
+else
+    gh release download "$RAX_VERSION" --repo "$REPO" --pattern "rax" --output "$RAX_BIN_DIR/rax" --clobber
+fi
+chmod +x "$RAX_BIN_DIR/rax"
+
+# Download policy template (don't overwrite existing)
+if [ ! -f "$RAX_CONFIG_DIR/policy.yml" ]; then
+    if [ "$RAX_VERSION" = "latest" ]; then
+        gh release download --repo "$REPO" --pattern "rsax-policy.yml" --output "$RAX_CONFIG_DIR/policy.yml" --clobber
+    else
+        gh release download "$RAX_VERSION" --repo "$REPO" --pattern "rsax-policy.yml" --output "$RAX_CONFIG_DIR/policy.yml" --clobber
+    fi
+    echo "==> Policy installed at $RAX_CONFIG_DIR/policy.yml"
+else
+    echo "==> Existing policy preserved at $RAX_CONFIG_DIR/policy.yml"
+fi
+
+# Verify
+if "$RAX_BIN_DIR/rax" --version >/dev/null 2>&1; then
+    echo "==> $("$RAX_BIN_DIR/rax" --version) installed successfully"
+else
+    echo "ERROR: rax installed but --version check failed"
+    exit 1
+fi
+
+# PATH hint
+case ":$PATH:" in
+    *":$RAX_BIN_DIR:"*) ;;
+    *) echo "==> Add to PATH: export PATH=\"$RAX_BIN_DIR:\$PATH\"" ;;
+esac
