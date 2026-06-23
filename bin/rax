@@ -100,26 +100,18 @@ if [ -n "$_perms" ] && [ "$_perms" != "600" ] && [ "$_perms" != "700" ]; then
     printf "${YELLOW}${WARN_ICON}  Pending file permissions: %s (expected 600)${RESET}\n" "$_perms"
 fi
 
-# --- Workdir validation ---
+# --- Repo detection (from invoker's cwd, BEFORE any cd) ---
 ORIGINAL_DIR="$(pwd)"
-if [ -n "$WORKDIR_HEADER" ]; then
-    if [ ! -d "$WORKDIR_HEADER" ]; then
-        echo ""
-        printf "${RED}${BOLD}BLOCKED:${RESET} Workdir does not exist: %s\n" "$WORKDIR_HEADER"
-        exit 1
-    fi
-    cd "$WORKDIR_HEADER"
-fi
-
-# --- Repo validation ---
 DETECTED_REPO=""
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     _remote_url=$(git remote get-url origin 2>/dev/null || echo "")
     if [ -n "$_remote_url" ]; then
-        DETECTED_REPO=$(echo "$_remote_url" | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')
+        # Handle ssh://, git@, https:// (with optional credentials)
+        DETECTED_REPO=$(echo "$_remote_url" | sed -E 's#^(ssh://[^/]+/|git@[^:]+:|https?://([^@/]+@)?[^/]+/)##; s#\.git$##')
     fi
 fi
 
+# --- Repo validation (before cd — checks invoker's repo, not Workdir's) ---
 if [ -n "$REPO_HEADER" ]; then
     if [ -n "$DETECTED_REPO" ] && [ "$REPO_HEADER" != "$DETECTED_REPO" ]; then
         echo ""
@@ -129,6 +121,17 @@ if [ -n "$REPO_HEADER" ]; then
         printf "  ${DIM}The staged action targets a different repo than the current directory.${RESET}\n"
         exit 1
     fi
+fi
+
+# --- Workdir validation ---
+if [ -n "$WORKDIR_HEADER" ]; then
+    WORKDIR_RESOLVED=$(realpath "$WORKDIR_HEADER" 2>/dev/null || echo "")
+    if [ -z "$WORKDIR_RESOLVED" ] || [ ! -d "$WORKDIR_RESOLVED" ]; then
+        echo ""
+        printf "${RED}${BOLD}BLOCKED:${RESET} Workdir does not exist: %s\n" "$WORKDIR_HEADER"
+        exit 1
+    fi
+    cd "$WORKDIR_RESOLVED"
 fi
 
 # --- Validation warnings ---
@@ -256,7 +259,7 @@ if [ -n "$REPO_HEADER" ]; then
     if [ -n "$DETECTED_REPO" ] && [ "$REPO_HEADER" = "$DETECTED_REPO" ]; then
         printf "  ${GREEN}${CHECK} Repo:${RESET}       %s\n" "$REPO_HEADER"
     else
-        printf "  ${GREEN}${CHECK} Repo:${RESET}       %s ${DIM}(no git remote to verify against)${RESET}\n" "$REPO_HEADER"
+        printf "  ${YELLOW}${WARN_ICON} Repo:${RESET}       %s ${YELLOW}(UNVERIFIED — no git remote to check against)${RESET}\n" "$REPO_HEADER"
     fi
 elif [ -n "$DETECTED_REPO" ]; then
     printf "  ${DIM}  Repo:       (not set — cwd is %s)${RESET}\n" "$DETECTED_REPO"
