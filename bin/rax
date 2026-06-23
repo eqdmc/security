@@ -85,6 +85,54 @@ ACTION_ID=$(extract_header "Action-ID" "$ACTION")
 if [ -z "$ACTION_ID" ]; then
     ACTION_ID="rsax-$(date +%Y-%m-%d)-adhoc-$(date +%s | tail -c 5)"
 fi
+REPO_HEADER=$(extract_header "Repo" "$ACTION")
+WORKDIR_HEADER=$(extract_header "Workdir" "$ACTION")
+INTERACTIVE_HEADER=$(extract_header "Interactive" "$ACTION")
+
+# --- Pending file permission check ---
+_perms=""
+if stat -f '%Lp' "$ACTION" >/dev/null 2>&1; then
+    _perms=$(stat -f '%Lp' "$ACTION")
+else
+    _perms=$(stat -c '%a' "$ACTION" 2>/dev/null || echo "")
+fi
+if [ -n "$_perms" ] && [ "$_perms" != "600" ] && [ "$_perms" != "700" ]; then
+    printf "${YELLOW}${WARN_ICON}  Pending file permissions: %s (expected 600)${RESET}\n" "$_perms"
+fi
+
+# --- Repo detection (from invoker's cwd, BEFORE any cd) ---
+ORIGINAL_DIR="$(pwd)"
+DETECTED_REPO=""
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    _remote_url=$(git remote get-url origin 2>/dev/null || echo "")
+    if [ -n "$_remote_url" ]; then
+        # Handle ssh://, git@, https:// (with optional credentials)
+        DETECTED_REPO=$(echo "$_remote_url" | sed -E 's#^(ssh://[^/]+/|git@[^:]+:|https?://([^@/]+@)?[^/]+/)##; s#\.git$##')
+    fi
+fi
+
+# --- Repo validation (before cd — checks invoker's repo, not Workdir's) ---
+if [ -n "$REPO_HEADER" ]; then
+    if [ -n "$DETECTED_REPO" ] && [ "$REPO_HEADER" != "$DETECTED_REPO" ]; then
+        echo ""
+        printf "${RED}${BOLD}BLOCKED:${RESET} Repository mismatch\n"
+        printf "  Header:   %s\n" "$REPO_HEADER"
+        printf "  Actual:   %s\n" "$DETECTED_REPO"
+        printf "  ${DIM}The staged action targets a different repo than the current directory.${RESET}\n"
+        exit 1
+    fi
+fi
+
+# --- Workdir validation ---
+if [ -n "$WORKDIR_HEADER" ]; then
+    WORKDIR_RESOLVED=$(realpath "$WORKDIR_HEADER" 2>/dev/null || echo "")
+    if [ -z "$WORKDIR_RESOLVED" ] || [ ! -d "$WORKDIR_RESOLVED" ]; then
+        echo ""
+        printf "${RED}${BOLD}BLOCKED:${RESET} Workdir does not exist: %s\n" "$WORKDIR_HEADER"
+        exit 1
+    fi
+    cd "$WORKDIR_RESOLVED"
+fi
 
 # --- Validation warnings ---
 VALIDATION_WARNINGS=""
@@ -96,6 +144,9 @@ if [ -z "$VERIFY_CMD" ]; then
 fi
 if [ -z "$ROLLBACK_CMD" ]; then
     VALIDATION_WARNINGS="${VALIDATION_WARNINGS}$(printf "  ${YELLOW}${WARN_ICON} No # Rollback: header — action may not be reversible${RESET}")\n"
+fi
+if [ -z "$REPO_HEADER" ] && [ -z "$WORKDIR_HEADER" ]; then
+    VALIDATION_WARNINGS="${VALIDATION_WARNINGS}$(printf "  ${YELLOW}${WARN_ICON} No # Repo: or # Workdir: header — action runs from cwd with no repo binding${RESET}")\n"
 fi
 
 # --- Protected path check ---
@@ -193,6 +244,34 @@ fi
 if [ -n "$ISSUE" ]; then
     echo ""
     printf "  ${BOLD}Issue:${RESET}        #${ISSUE} ${DIM}— result will auto-comment if gh + issue-verify available${RESET}\n"
+fi
+
+# ─── REPO CONTEXT ───
+echo ""
+printf "${CYAN}───── REPO CONTEXT ────────────────────────────────────────${RESET}\n"
+echo ""
+if [ -n "$WORKDIR_HEADER" ]; then
+    printf "  ${GREEN}${CHECK} Workdir:${RESET}    %s\n" "$WORKDIR_HEADER"
+else
+    printf "  ${DIM}  Workdir:    (not set — running from %s)${RESET}\n" "$(pwd)"
+fi
+if [ -n "$REPO_HEADER" ]; then
+    if [ -n "$DETECTED_REPO" ] && [ "$REPO_HEADER" = "$DETECTED_REPO" ]; then
+        printf "  ${GREEN}${CHECK} Repo:${RESET}       %s\n" "$REPO_HEADER"
+    else
+        printf "  ${YELLOW}${WARN_ICON} Repo:${RESET}       %s ${YELLOW}(UNVERIFIED — no git remote to check against)${RESET}\n" "$REPO_HEADER"
+    fi
+elif [ -n "$DETECTED_REPO" ]; then
+    printf "  ${DIM}  Repo:       (not set — cwd is %s)${RESET}\n" "$DETECTED_REPO"
+else
+    printf "  ${DIM}  Repo:       (not set — no git remote detected)${RESET}\n"
+fi
+if [ -n "$_perms" ]; then
+    if [ "$_perms" = "600" ] || [ "$_perms" = "700" ]; then
+        printf "  ${GREEN}${CHECK} Perms:${RESET}      %s\n" "$_perms"
+    else
+        printf "  ${YELLOW}${WARN_ICON} Perms:${RESET}      %s ${YELLOW}(expected 600)${RESET}\n" "$_perms"
+    fi
 fi
 
 if [ -n "$VALIDATION_WARNINGS" ]; then
@@ -507,6 +586,8 @@ export RAX_CATEGORY="${RAX_CATEGORY:-rax}"
 
 # --- Write result + audit trail ---
 export OUTPUT_TAIL="$(tail -30 "$LOGFILE" 2>/dev/null || echo "(no output)")"
+export RAX_REPO="${REPO_HEADER:-$DETECTED_REPO}"
+export RAX_WORKDIR="${WORKDIR_HEADER:-$ORIGINAL_DIR}"
 
 python3 - "$RESULT_FILE" "$status" "$PURPOSE" "${verify_status:-}" "${ROLLBACK_CMD:-}" "$ACTION_ID" "$DANGER" "$SESSION_ID" "$AUDIT_FILE" "$RAX_CATEGORY" <<'PYEOF'
 import json, sys, time, os
@@ -524,6 +605,12 @@ entry = {
     "review_needed": category == "rax",
     "output_tail": os.environ.get("OUTPUT_TAIL", "")[:2000],
 }
+repo = os.environ.get("RAX_REPO", "")
+if repo:
+    entry["repo"] = repo
+workdir = os.environ.get("RAX_WORKDIR", "")
+if workdir:
+    entry["workdir"] = workdir
 verify = sys.argv[4]
 if verify:
     try:
