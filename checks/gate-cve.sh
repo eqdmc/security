@@ -102,8 +102,17 @@ if [ "$vuln_total" -gt 0 ]; then
         priority="P4"; p4=$((p4 + 1))
       fi
     elif [ "$cvss_score" != "none" ]; then
-      cvss_high=$(awk "BEGIN {print ($cvss_score >= $CVSS_THRESHOLD) ? 1 : 0}")
-      [ "$cvss_high" -eq 1 ] && priority="P2" && p2=$((p2 + 1)) || { priority="P4"; p4=$((p4 + 1)); }
+      # EPSS unavailable — conservative default:
+      # CRITICAL (cvss >= 9.0) with unknown EPSS → P1 (assume exploited)
+      # HIGH (cvss >= 6.0) with unknown EPSS → P2 (current behavior)
+      # LOW (cvss < 6.0) with unknown EPSS → P4
+      cvss_critical=$(awk "BEGIN {print ($cvss_score >= 9.0) ? 1 : 0}")
+      if [ "$cvss_critical" -eq 1 ]; then
+        priority="P1"; p1=$((p1 + 1))
+      else
+        cvss_high=$(awk "BEGIN {print ($cvss_score >= $CVSS_THRESHOLD) ? 1 : 0}")
+        [ "$cvss_high" -eq 1 ] && priority="P2" && p2=$((p2 + 1)) || { priority="P4"; p4=$((p4 + 1)); }
+      fi
     else
       priority="unscored"; unscoped=$((unscoped + 1))
     fi

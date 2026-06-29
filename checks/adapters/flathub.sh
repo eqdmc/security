@@ -88,13 +88,23 @@ fi
 finish_args_raw=$(curl -sfL "https://raw.githubusercontent.com/flathub/${APP_ID}/master/${APP_ID}.yaml" 2>/dev/null || echo "")
 [ -z "$finish_args_raw" ] && finish_args_raw=$(curl -sfL "https://raw.githubusercontent.com/flathub/${APP_ID}/master/${APP_ID}.yml" 2>/dev/null || echo "")
 [ -z "$finish_args_raw" ] && finish_args_raw=$(curl -sfL "https://raw.githubusercontent.com/flathub/${APP_ID}/master/${APP_ID}.json" 2>/dev/null || echo "")
-finish_args=$(echo "$finish_args_raw" | grep -E '^\s+-\s+--' | sed 's/^\s*-\s*//' 2>/dev/null || echo "")
-
-# Parse runtime info from manifest
-runtime_line=$(echo "$finish_args_raw" | grep -E '^runtime:' | head -1 || echo "")
-runtime_version_line=$(echo "$finish_args_raw" | grep -E '^runtime-version:' | head -1 || echo "")
-runtime=$(echo "$runtime_line" | sed 's/^runtime:[[:space:]]*//' || echo "")
-runtime_version=$(echo "$runtime_version_line" | sed "s/^runtime-version:[[:space:]]*//;s/^'//;s/'$//" || echo "")
+# Detect manifest format (JSON or YAML) and parse finish-args + runtime
+finish_args=""
+runtime=""
+runtime_version=""
+if echo "$finish_args_raw" | head -1 | grep -qE '^\s*\{'; then
+  # JSON format
+  finish_args=$(echo "$finish_args_raw" | jq -r '.["finish-args"] // [] | .[]' 2>/dev/null || echo "")
+  runtime=$(echo "$finish_args_raw" | jq -r '.["runtime"] // ""' 2>/dev/null || echo "")
+  runtime_version=$(echo "$finish_args_raw" | jq -r '.["runtime-version"] // ""' 2>/dev/null || echo "")
+else
+  # YAML format
+  finish_args=$(echo "$finish_args_raw" | grep -E '^\s+-\s+--' | sed 's/^\s*-\s*//' 2>/dev/null || echo "")
+  runtime_line=$(echo "$finish_args_raw" | grep -E '^runtime:' | head -1 || echo "")
+  runtime_version_line=$(echo "$finish_args_raw" | grep -E '^runtime-version:' | head -1 || echo "")
+  runtime=$(echo "$runtime_line" | sed 's/^runtime:[[:space:]]*//' || echo "")
+  runtime_version=$(echo "$runtime_version_line" | sed "s/^runtime-version:[[:space:]]*//;s/^'//;s/'$//" || echo "")
+fi
 
 jq -n \
   --arg name "$name" --arg version "$VER" --arg ecosystem "flathub" \
