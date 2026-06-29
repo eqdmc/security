@@ -115,6 +115,7 @@ GATE_SCRIPTS=(
   "$CHECKS_DIR/gate-install-scripts.sh"
   "$CHECKS_DIR/gate-quarantine.sh"
   "$CHECKS_DIR/gate-registry-repo.sh"
+  "$CHECKS_DIR/gate-flatpak-permissions.sh"
 )
 
 results_arr="["

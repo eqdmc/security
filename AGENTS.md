@@ -106,12 +106,16 @@ Revert the atomic commit: `git revert <sha>` removes ADR + manifest change.
 
 Binary pass/fail. No advisory-only.
 
-**5 hard gates (ALL must PASS):**
+**6 hard gates (ALL must PASS):**
 1. License is permissive
 2. Zero P1+/P1 CVEs (multi-signal: KEV → EPSS → CVSS)
 3. No install scripts
-4. Published >= 7 days ago (quarantine)
+4. Published >= 7 days ago (quarantine) — measures *actual release date* from Flathub API releases[0].timestamp, not repo creation date
 5. Registry-repo identity match
+6. Flatpak finish-args are safe (ecosystem-specific: N/A for non-flatpak)
+   - CRITICAL (automatic FAIL): `--filesystem=host`, `--filesystem=/`, `--talk-name=org.freedesktop.Flatpak` (sandbox escape)
+   - HIGH (FAIL if multiple): `--filesystem=home`, `--socket=system-bus`
+   - MEDIUM (informational): `--socket=x11` (common, permitted)
 
 **5 scored checks (>= 3 must PASS):**
 6. OpenSSF Scorecard >= 5.0
@@ -121,6 +125,7 @@ Binary pass/fail. No advisory-only.
 10. Transitive dep count <= 500
 
 **Verdict:** all gates PASS + scored threshold met = APPROVED. Any gate FAIL = BLOCKED.
+N/A gates (ecosystem-specific checks) don't count toward the total.
 
 ## Sovereignty principle
 

@@ -40,13 +40,27 @@ maintainers=$(echo "$appdata" | jq -c '[.developer_name // "'"$developer_name"'"
 stars=0
 forks=0
 
+# Primary source: actual release timestamp from Flathub API
+# This is the true package release date, not the repo creation date.
+last_release_ts=$(echo "$appdata" | jq -r '.releases[0].timestamp // ""')
+if [ -n "$last_release_ts" ] && [ "$last_release_ts" != "null" ]; then
+  # Convert unix timestamp to ISO 8601
+  if date --version >/dev/null 2>&1; then
+    pub_time=$(date -d "@$last_release_ts" -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+  fi
+fi
+
 if [ -n "$gh_slug" ] && command -v gh &>/dev/null; then
   # Fetch repo info — use tmpfile to avoid `||` concatenating error JSON + fallback
   gh_tmp=$(mktemp) && trap 'rm -f "$gh_tmp"' RETURN
   if gh api "repos/${gh_slug}" --jq '{created: .created_at, pushed: .pushed_at, stars: .stargazers_count, forks: .forks_count, language: .language}' > "$gh_tmp" 2>/dev/null; then
     gh_data=$(<"$gh_tmp")
-    gh_created=$(echo "$gh_data" | jq -r '.created // ""')
-    [ -n "$gh_created" ] && pub_time="$gh_created"
+
+    # GitHub repo created_at is a fallback if no release timestamp available
+    if [ -z "$pub_time" ]; then
+      gh_created=$(echo "$gh_data" | jq -r '.created // ""')
+      [ -n "$gh_created" ] && pub_time="$gh_created"
+    fi
 
     stars=$(echo "$gh_data" | jq -r '.stars // 0')
     forks=$(echo "$gh_data" | jq -r '.forks // 0')
@@ -65,22 +79,40 @@ if [ -n "$gh_slug" ] && command -v gh &>/dev/null; then
   fi
 fi
 
+# Additional fallbacks if still empty
 [ -z "$pub_time" ] && pub_time=$(echo "$appdata_full" | jq -r '.released // ""')
 [ -z "$pub_time" ] && pub_time=$(echo "$appdata" | jq -r '.released // ""')
 [ -z "$pub_time" ] && pub_time="unknown"
 
+# Fetch finish-args from Flathub manifest (for permission gate)
+finish_args_raw=$(curl -sfL "https://raw.githubusercontent.com/flathub/${APP_ID}/master/${APP_ID}.yaml" 2>/dev/null || echo "")
+[ -z "$finish_args_raw" ] && finish_args_raw=$(curl -sfL "https://raw.githubusercontent.com/flathub/${APP_ID}/master/${APP_ID}.yml" 2>/dev/null || echo "")
+[ -z "$finish_args_raw" ] && finish_args_raw=$(curl -sfL "https://raw.githubusercontent.com/flathub/${APP_ID}/master/${APP_ID}.json" 2>/dev/null || echo "")
+finish_args=$(echo "$finish_args_raw" | grep -E '^\s+-\s+--' | sed 's/^\s*-\s*//' 2>/dev/null || echo "")
+
+# Parse runtime info from manifest
+runtime_line=$(echo "$finish_args_raw" | grep -E '^runtime:' | head -1 || echo "")
+runtime_version_line=$(echo "$finish_args_raw" | grep -E '^runtime-version:' | head -1 || echo "")
+runtime=$(echo "$runtime_line" | sed 's/^runtime:[[:space:]]*//' || echo "")
+runtime_version=$(echo "$runtime_version_line" | sed 's/^runtime-version:[[:space:]]*//' || echo "")
+
 jq -n \
   --arg name "$name" --arg version "$VER" --arg ecosystem "flathub" \
-  --arg license "$license" --arg repo_url "$repo_url" --arg gh_slug "$gh_slug" \
+  --arg app_id "$APP_ID" --arg license "$license" \
+  --arg repo_url "$repo_url" --arg gh_slug "$gh_slug" \
   --arg pub_time "$pub_time" --argjson maintainer_count "$maintainer_count" \
   --argjson maintainers "$maintainers" --argjson has_scripts "$has_scripts" \
   --argjson stars "$stars" --argjson forks "$forks" \
+  --arg finish_args "$finish_args" --arg runtime "$runtime" \
+  --arg runtime_version "$runtime_version" \
   '{
     ecosystem: $ecosystem, package: $name, version: $version,
     metadata: {
-      license: $license, repo_url: $repo_url, gh_slug: $gh_slug,
-      publish_time: $pub_time, maintainer_count: $maintainer_count,
+      app_id: $app_id, license: $license, repo_url: $repo_url,
+      gh_slug: $gh_slug, publish_time: $pub_time,
+      maintainer_count: $maintainer_count,
       maintainers: $maintainers, has_install_scripts: $has_scripts,
-      stars: $stars, forks: $forks
+      stars: $stars, forks: $forks,
+      finish_args: $finish_args, runtime: $runtime, runtime_version: $runtime_version
     }
   }'

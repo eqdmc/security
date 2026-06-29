@@ -83,6 +83,23 @@ gates:
     name: Registry metadata matches source repo
     type: hard
 
+  - id: flatpak_permissions
+    name: Flatpak finish-args are safe (no sandbox-escape, no full-fs access)
+    type: hard
+    ecosystem: flathub
+    dangerous:
+      critical:
+        - --filesystem=host
+        - --filesystem=host-os
+        - --filesystem=/
+        - --talk-name=org.freedesktop.Flatpak
+      high:
+        - --filesystem=home
+        - --socket=system-bus
+    rules:
+      max_critical: 0
+      max_high_without_review: 1
+
 scored:
   # >= threshold must PASS
   threshold: 3
