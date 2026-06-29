@@ -18,10 +18,13 @@ repo_url=$(echo "$appdata" | jq -r '(.urls.homepage // (.urls["donation"] // "")
 [ -z "$repo_url" ] && repo_url=$(echo "$appdata" | jq -r '.urls // empty | to_entries | map(.value) | first // ""')
 developer_name=$(echo "$appdata" | jq -r '.developer_name // "unknown"')
 
-# GitHub slug from repo_url or app ID convention
+# GitHub slug from vcs_browser, repo_url, or app ID convention
 gh_slug=""
-if [ -n "$repo_url" ] && [[ "$repo_url" =~ github\.com[:/]([^/]+)/([^/]+) ]]; then
-  gh_slug="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+vcs_url=$(echo "$appdata" | jq -r '.urls.vcs_browser // ""')
+if [ -n "$vcs_url" ] && [[ "$vcs_url" =~ github\.com[:/]([^/]+)/([^/]+) ]]; then
+  gh_slug="${BASH_REMATCH[1]}/${BASH_REMATCH[2]%.git}"
+elif [ -n "$repo_url" ] && [[ "$repo_url" =~ github\.com[:/]([^/]+)/([^/]+) ]]; then
+  gh_slug="${BASH_REMATCH[1]}/${BASH_REMATCH[2]%.git}"
 elif echo "$APP_ID" | grep -qE '^org\.|^io\.|^com\.'; then
   slug=$(echo "$APP_ID" | sed 's/^[a-z]*\.//;s/\.[^.]*$//')
   gh_slug="$slug/$slug"
@@ -38,19 +41,27 @@ stars=0
 forks=0
 
 if [ -n "$gh_slug" ] && command -v gh &>/dev/null; then
-  gh_data=$(gh api "repos/${gh_slug}" --jq '{created: .created_at, pushed: .pushed_at, stars: .stargazers_count, forks: .forks_count, language: .language}' 2>/dev/null || echo '{}')
-  gh_created=$(echo "$gh_data" | jq -r '.created // ""')
-  [ -n "$gh_created" ] && pub_time="$gh_created"
-  
-  stars=$(echo "$gh_data" | jq -r '.stars // 0')
-  forks=$(echo "$gh_data" | jq -r '.forks // 0')
+  # Fetch repo info — use tmpfile to avoid `||` concatenating error JSON + fallback
+  gh_tmp=$(mktemp) && trap 'rm -f "$gh_tmp"' RETURN
+  if gh api "repos/${gh_slug}" --jq '{created: .created_at, pushed: .pushed_at, stars: .stargazers_count, forks: .forks_count, language: .language}' > "$gh_tmp" 2>/dev/null; then
+    gh_data=$(<"$gh_tmp")
+    gh_created=$(echo "$gh_data" | jq -r '.created // ""')
+    [ -n "$gh_created" ] && pub_time="$gh_created"
 
-  # Contributor count as maintainer proxy
-  gh_contributors=$(gh api "repos/${gh_slug}/contributors" --jq 'length' 2>/dev/null || echo "0")
-  if [ "$gh_contributors" -gt 0 ]; then
-    maintainer_count="$gh_contributors"
-    gh_maintainers=$(gh api "repos/${gh_slug}/contributors" --jq '[.[].login] | .[0:10]' 2>/dev/null || echo '[]')
-    [ "$(echo "$gh_maintainers" | jq 'length')" -gt 0 ] && maintainers="$gh_maintainers"
+    stars=$(echo "$gh_data" | jq -r '.stars // 0')
+    forks=$(echo "$gh_data" | jq -r '.forks // 0')
+
+    # Contributor count as maintainer proxy
+    if gh api "repos/${gh_slug}/contributors" --jq 'length' > "$gh_tmp" 2>/dev/null; then
+      gh_contributors=$(<"$gh_tmp")
+      gh_contributors="${gh_contributors//[!0-9]/}"
+      if [ "${gh_contributors:-0}" -gt 0 ] 2>/dev/null; then
+        maintainer_count="$gh_contributors"
+        if gh api "repos/${gh_slug}/contributors" --jq '[.[].login] | .[0:10]' > "$gh_tmp" 2>/dev/null; then
+          maintainers=$(<"$gh_tmp")
+        fi
+      fi
+    fi
   fi
 fi
 

@@ -140,6 +140,78 @@ Uses CVE_Prioritizer quadrant model (arxiv:2506.01220):
 - Labels, rulesets, and workflows managed centrally via eqdmc/.github
 - ADR results feed into eqdmc/.github/vetting/approved.yml
 
+## Enforcement rules
+
+### Agents MUST NOT run raw package manager commands
+
+The following are BLOCKED at the guard layer in `eqdmc/dotfiles/guards/dotfiles-guard.py`:
+
+| Pattern | Example |
+|---------|---------|
+| `flatpak install` | `flatpak install org.foo.App` |
+| `flatpak update` / `flatpak upgrade` | `flatpak update` |
+| `dnf install` | `sudo dnf install htop` |
+| `dnf update` / `dnf upgrade` | `dnf update` |
+| `apt install` | `apt install foo` |
+| `brew install` | `brew install foo` |
+| `pip install` / `pip3 install` | `pip install requests` |
+| `cargo install` | `cargo install foo` |
+| `snap install` | `snap install foo` |
+
+Additionally, `opencode.json` in both `eqdmc/security` and `eqdmc/dotfiles` marks all
+raw install commands as `"ask"` (user confirmation required).
+
+### Allowed install paths
+
+```
+bin/vet-install <package> [--eco <ecosystem>]    # vet → ADR → manifest → install → commit
+bash packages/install.sh                           # bulk install of already vetted packages
+```
+
+`bin/vet-install` is the ONLY path for installing new/unvetted packages. It:
+1. Runs `bin/vet` with vetting
+2. Generates ADR (`adrs/XXXX-{eco}-{package}.md`)
+3. Adds to manifest (`packages/{manifest}.txt`)
+4. Optionally installs
+5. Creates a git commit with all changes
+
+### Auto-updates disabled
+
+Auto-update timers/services must be disabled on all managed machines so every
+upgrade goes through re-vetting. Common services:
+- `flatpak-update.service` / `flatpak-update.timer`
+- `dnf-automatic.timer` / `dnf-automatic-install.timer`
+
+When onboarding a new machine, check with: `systemctl --user list-timers` and
+`systemctl list-timers`.
+
+## Test procedure
+
+To verify enforcement is working:
+
+```bash
+# 1. Guard blocks raw installs
+echo '{"action":"exec","command":"flatpak install org.htop.Htop"}' \
+  | python3 guards/dotfiles-guard.py
+# → exits 2 with steer message to bin/vet-install
+
+# 2. Guard allows vetted workflows
+echo '{"action":"exec","command":"bash packages/install.sh"}' \
+  | python3 guards/dotfiles-guard.py
+# → exits 0
+
+# 3. Vet system correctly gates packages
+bin/vet org.gimp.GIMP --eco flathub
+# → BLOCKED (GPL-3.0+ copyleft license)
+
+bin/vet com.jgraph.drawio.desktop --eco flathub
+# → APPROVED (Apache-2.0, all gates pass)
+
+# 4. Full atomic workflow
+bin/vet com.jgraph.drawio.desktop --eco flathub --adr
+# → ADR generated, ready for manifest + git commit
+```
+
 ## Style
 
 - Conventional commits: feat/fix/refactor/docs/test/chore

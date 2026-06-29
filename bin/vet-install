@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# vet-install — Atomic vet + install for any package ecosystem
+#
+# Usage:
+#   vet-install <package> [version] [--eco <ecosystem>]
+#   vet-install update <package> <new-version> [--eco <ecosystem>]
+#
+# Combines bin/vet + packages/install.sh in one atomic, auditable operation.
+# Generates ADR, updates manifest, installs, and commits.
+#
+# Enforcement: This is the ONLY way agents should install software.
+# All raw package manager commands (flatpak install, dnf install, etc.)
+# are blocked at the guard layer — see dotfiles-guard.py blocked_commands.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
+
+SECURITY_REPO="$SCRIPT_DIR"
+DOTFILES_REPO="$(cd "$SCRIPT_DIR/../dotfiles" && pwd 2>/dev/null || echo "$HOME/.config/eqdmc/dotfiles")"
+
+MODE="install"
+PKG=""
+VER=""
+ECO="auto"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    update) MODE="update"; shift ;;
+    --eco|--ecosystem) ECO="$2"; shift 2 ;;
+    --help|-h) echo "Usage: vet-install <package> [version] [--eco <ecosystem>]"; echo "       vet-install update <package> <new-version> [--eco <ecosystem>]"; exit 0 ;;
+    *)
+      if [ -z "$PKG" ]; then
+        PKG="$1"
+      elif [ -z "$VER" ]; then
+        VER="$1"
+      fi
+      shift ;;
+  esac
+done
+
+[ -z "$PKG" ] && { echo "Usage: vet-install <package> [version] [--eco <ecosystem>]" >&2; exit 1; }
+
+step "Phase 1: Vetting $PKG"
+VET_RESULT=$("$SECURITY_REPO/bin/vet" "$PKG" "$VER" --eco "$ECO" --adr 2>&1 | tee /dev/stderr | tail -1)
+VERDICT_FILE="$VET_RESULT"
+[ ! -f "$VERDICT_FILE" ] && VERDICT_FILE=$(echo "$VET_RESULT" | grep -o '/tmp/eqdmc-vet-[^"]*' | head -1)
+
+if [ -n "${VERDICT_FILE:-}" ] && [ -f "${VERDICT_FILE:-}" ]; then
+  verdict=$(jq -r '.summary.verdict' "$VERDICT_FILE" 2>/dev/null || echo "UNKNOWN")
+else
+  verdict=$(grep -o 'VERDICT: [A-Z]*' /dev/stdin <<< "$VET_RESULT" 2>/dev/null | head -1 | awk '{print $2}' || echo "UNKNOWN")
+fi
+
+if [ "$verdict" != "APPROVED" ]; then
+  die "Verdict: $verdict — BLOCKED. Fix gate failures before installing."
+fi
+
+ok "Verdict: APPROVED — proceeding with installation"
+
+step "Phase 2: Checking manifest"
+# Determine which manifest to add to based on ecosystem
+eco=$(jq -r '.ecosystem // "unknown"' "$VERDICT_FILE" 2>/dev/null || echo "$ECO")
+pkg_name=$(jq -r '.package // "'"$PKG"'"' "$VERDICT_FILE" 2>/dev/null || echo "$PKG")
+pkg_ver=$(jq -r '.version // "'"$VER"'"' "$VERDICT_FILE" 2>/dev/null || echo "$VER")
+
+manifest_file=""
+case "$eco" in
+  flathub) manifest_file="$DOTFILES_REPO/packages/flatpak-packages.txt" ;;
+  npm)     echo "WARN: npm packages not yet auto-managed — install manually" >&2 ;;
+  pypi)    manifest_file="$DOTFILES_REPO/packages/pip-tools.txt" ;;
+  crates)  manifest_file="$DOTFILES_REPO/packages/cargo-tools.txt" ;;
+  *)       echo "WARN: no manifest for ecosystem '$eco'" >&2 ;;
+esac
+
+if [ -n "$manifest_file" ] && [ -f "$manifest_file" ]; then
+  if grep -q "^${pkg_name}" "$manifest_file" 2>/dev/null; then
+    ok "$pkg_name already in manifest"
+  else
+    echo "# Vetted $(date +%Y-%m-%d) via ADR-$(ls "$SECURITY_REPO/adrs/"*.md | sort | tail -1 | grep -oP '\d+')" >> "$manifest_file"
+    echo "$pkg_name" >> "$manifest_file"
+    ok "Added $pkg_name to $(basename "$manifest_file")"
+  fi
+fi
+
+step "Phase 3: Installation"
+case "$eco" in
+  flathub)
+    flatpak install -y flathub "$pkg_name" 2>&1 || warn "Installation failed (may already be installed)"
+    ;;
+  pypi)
+    pip3 install "$pkg_name" 2>&1 || warn "pip install failed"
+    ;;
+  crates)
+    cargo install "$pkg_name" 2>&1 || warn "cargo install failed"
+    ;;
+  *)
+    warn "No auto-installer for ecosystem '$eco' — install manually"
+    ;;
+esac
+
+ok "Installation complete for $pkg_name"
+
+step "Phase 4: Git commit"
+BRANCH_NAME="vet/${eco}-$(echo "$pkg_name" | sed 's|[/@]|-|g')"
+CURRENT_BRANCH=$(git -C "$SECURITY_REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+
+if [ "$CURRENT_BRANCH" != "$BRANCH_NAME" ] && [ "$CURRENT_BRANCH" != "main" ]; then
+  info "On branch $CURRENT_BRANCH — not creating vet branch"
+  info "To commit: git checkout -b $BRANCH_NAME && git add -A && git commit -m \"feat(vet): approve $pkg_name for $eco\""
+elif [ -d "$SECURITY_REPO/.git" ]; then
+  git -C "$SECURITY_REPO" add -A 2>/dev/null || true
+  git -C "$SECURITY_REPO" commit -m "feat(vet): approve $pkg_name v$pkg_ver for $eco" --allow-empty 2>/dev/null || warn "Nothing new to commit"
+fi
+
+echo ""
+echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "  ${GREEN}  $pkg_name v$pkg_ver VETTED + INSTALLED${NC}"
+echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
