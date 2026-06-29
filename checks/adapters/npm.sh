@@ -11,7 +11,12 @@ reg=$(curl -sf "https://registry.npmjs.org/${PKG}/${VER}" 2>/dev/null || echo '{
 root=$(curl -sf "https://registry.npmjs.org/${PKG}" 2>/dev/null || echo '{}')
 
 license=$(echo "$reg" | jq -r '.license // "unknown"')
-pub_time=$(echo "$root" | jq -r ".time[\"${VER}\"] // \"unknown\"")
+# Resolve the actual version (handles 'latest' tag), then look up publish_time
+actual_ver=$(echo "$reg" | jq -r '.version // ""')
+pub_time="unknown"
+if [ -n "$actual_ver" ]; then
+  pub_time=$(echo "$root" | jq -r ".time[\"${actual_ver}\"] // \"unknown\"")
+fi
 maintainer_count=$(echo "$root" | jq '[.maintainers // [] | .[].name] | unique | length')
 maintainers=$(echo "$root" | jq -c '[.maintainers // [] | .[].name] | unique')
 repo_url=$(echo "$reg" | jq -r '.repository.url // .repository // ""' | sed 's|^git+||;s|\.git$||;s|^ssh://git@|https://|;s|^git://|https://|')

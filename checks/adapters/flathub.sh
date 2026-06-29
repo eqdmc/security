@@ -18,16 +18,13 @@ repo_url=$(echo "$appdata" | jq -r '(.urls.homepage // (.urls["donation"] // "")
 [ -z "$repo_url" ] && repo_url=$(echo "$appdata" | jq -r '.urls // empty | to_entries | map(.value) | first // ""')
 developer_name=$(echo "$appdata" | jq -r '.developer_name // "unknown"')
 
-# GitHub slug from vcs_browser, repo_url, or app ID convention
+# GitHub slug from vcs_browser or repo_url only — never fabricate from app ID
 gh_slug=""
 vcs_url=$(echo "$appdata" | jq -r '.urls.vcs_browser // ""')
 if [ -n "$vcs_url" ] && [[ "$vcs_url" =~ github\.com[:/]([^/]+)/([^/]+) ]]; then
   gh_slug="${BASH_REMATCH[1]}/${BASH_REMATCH[2]%.git}"
 elif [ -n "$repo_url" ] && [[ "$repo_url" =~ github\.com[:/]([^/]+)/([^/]+) ]]; then
   gh_slug="${BASH_REMATCH[1]}/${BASH_REMATCH[2]%.git}"
-elif echo "$APP_ID" | grep -qE '^org\.|^io\.|^com\.'; then
-  slug=$(echo "$APP_ID" | sed 's/^[a-z]*\.//;s/\.[^.]*$//')
-  gh_slug="$slug/$slug"
 fi
 
 # Flathub apps are sandboxed — no install scripts

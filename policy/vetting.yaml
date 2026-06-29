@@ -65,6 +65,15 @@ gates:
     thresholds:
       cvss_floor: 6.0
       epss_floor: 0.2
+    # EPSS-unavailable fallback (no CVE ID to query):
+    #   CRITICAL (cvss >= 9.0) → P1 (assume worst — conservative)
+    #   HIGH (cvss >= 6.0) → P2 (warn; blocking all HIGH-noEPSS would
+    #     overblock on severity-only data without exploitation signal)
+    #   LOW/unknown → P4
+    epss_unavailable:
+      critical: P1
+      high: P2
+      low: P4
 
   - id: install_scripts
     name: No install scripts
