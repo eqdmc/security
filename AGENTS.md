@@ -84,6 +84,11 @@ bin/vet org.localsend.localsend_app --eco flathub --adr --no-install
 vet/{eco}-{package}          e.g. vet/flathub-localsend
 ```
 
+Branch convention by change type:
+- **Package vetting** → `vet/{eco}-{package}` branch, PR to main
+- **Infrastructure changes** (gates, adapters, policy, AGENTS.md, bin/) → commit directly to main or `enforce/`/`fix/` branch
+- The security repo (`eqdmc/security`) uses main-direct commits for infrastructure; the dotfiles repo (`eqdmc/dotfiles`) uses `vet/` branches for package installs only
+
 ### Atomic commit scope
 Each vetting produces one atomic commit containing:
 1. `adrs/XXXX-{eco}-{package}.md` — auto-generated ADR

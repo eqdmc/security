@@ -94,7 +94,7 @@ finish_args=$(echo "$finish_args_raw" | grep -E '^\s+-\s+--' | sed 's/^\s*-\s*//
 runtime_line=$(echo "$finish_args_raw" | grep -E '^runtime:' | head -1 || echo "")
 runtime_version_line=$(echo "$finish_args_raw" | grep -E '^runtime-version:' | head -1 || echo "")
 runtime=$(echo "$runtime_line" | sed 's/^runtime:[[:space:]]*//' || echo "")
-runtime_version=$(echo "$runtime_version_line" | sed 's/^runtime-version:[[:space:]]*//' || echo "")
+runtime_version=$(echo "$runtime_version_line" | sed "s/^runtime-version:[[:space:]]*//;s/^'//;s/'$//" || echo "")
 
 jq -n \
   --arg name "$name" --arg version "$VER" --arg ecosystem "flathub" \
