@@ -22,6 +22,10 @@ class TestClassifyAction:
     def test_secrets_token(self):
         assert classify_action(FIXTURES / "secrets_token.sh") == "secrets"
 
+    def test_secrets_yubikey(self):
+        """YubiKey-backed provision classifies as secrets (matches sops, secret, api_key patterns)."""
+        assert classify_action(FIXTURES / "secrets_yubikey.sh") == "secrets"
+
     def test_deploy_release(self):
         assert classify_action(FIXTURES / "deploy_release.sh") == "deploy"
 
