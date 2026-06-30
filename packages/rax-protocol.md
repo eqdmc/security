@@ -178,3 +178,30 @@ To add a new task type:
 2. Register any new danger patterns
 3. The type is immediately available for use
 4. Run `rax-deploy` to propagate to all machines
+
+## Multi-action support (v0.3.0)
+
+rax now supports multiple simultaneous staged actions via numbered files:
+
+```
+~/.rax/pending/
+├── 1.sh        # rax 1 — first action
+├── 2.sh        # rax 2 — second action
+└── 3.sh        # rax 3 — third action
+```
+
+### Usage
+
+```bash
+rax          # Run the lowest-numbered pending action
+rax 1        # Run specific action #1
+rax 2        # Run specific action #2
+rax list     # List all staged actions with purposes
+```
+
+### How it works
+
+Each file in `~/.rax/pending/N.sh` is a standard rax staged action.
+Files must be mode 600. The script is removed after execution.
+The single-file env var `RAX_PENDING_FILE` still works for backward
+compatibility — it takes priority over numbered actions.

@@ -37,9 +37,49 @@ if [ "${1:-}" = "--show-policy" ]; then
     exit 0
 fi
 
+# --- Multi-action support ---
+# Usage: rax [N] or rax list
+#   rax     — run the lowest-numbered pending action
+#   rax 2   — run pending action ~/.rax/pending/2.sh
+#   rax list — list all pending actions
+RAX_PENDING_DIR="${RAX_PENDING_DIR:-$HOME/.rax/pending}"
+RAX_CMD="${1:-}"
+
+if [ "$RAX_CMD" = "list" ]; then
+    echo "Staged actions:"
+    if [ -d "$RAX_PENDING_DIR" ]; then
+        for f in "$RAX_PENDING_DIR"/[0-9]*.sh; do
+            [ -f "$f" ] || continue
+            num=$(basename "$f" .sh)
+            purpose=$(grep -m1 '^# Purpose:' "$f" 2>/dev/null | sed 's/.*: *//' || echo "no purpose")
+            echo "  rax $num — $purpose"
+        done
+    fi
+    exit 0
+fi
+
 # --- Paths (all env-var driven, sensible defaults) ---
 RAX_STATE_DIR="${RAX_STATE_DIR:-$HOME/.rax/state}"
-ACTION="${RAX_PENDING_FILE:-$HOME/.rax/pending.sh}"
+
+# Resolve pending action: RAX_PENDING_FILE > numbered arg > default single file > auto-detect
+if [ -n "${RAX_PENDING_FILE:-}" ]; then
+    ACTION="$RAX_PENDING_FILE"
+elif [ -n "$RAX_CMD" ] && [ "$RAX_CMD" -eq "$RAX_CMD" ] 2>/dev/null; then
+    ACTION="$RAX_PENDING_DIR/$RAX_CMD.sh"
+    mkdir -p "$RAX_PENDING_DIR"
+elif [ -f "$HOME/.rax/pending.sh" ]; then
+    ACTION="$HOME/.rax/pending.sh"
+elif [ -d "$RAX_PENDING_DIR" ]; then
+    first=$(ls "$RAX_PENDING_DIR"/[0-9]*.sh 2>/dev/null | sort | head -1)
+    if [ -n "$first" ]; then
+        ACTION="$first"
+    else
+        ACTION="$HOME/.rax/pending.sh"
+    fi
+else
+    ACTION="$HOME/.rax/pending.sh"
+fi
+
 RESULT_FILE="${RAX_RESULT_FILE:-$RAX_STATE_DIR/last-result.json}"
 AUDIT_FILE="${RAX_AUDIT_FILE:-$RAX_STATE_DIR/audit.jsonl}"
 SESSION_ID="${RAX_SESSION_ID:-unknown}"

@@ -2,17 +2,17 @@
 # All rax tools derive config from this file at runtime.
 # Version 0.2.1 (early stage)
 protocol:
-  version: "0.2.1"
+  version: "0.3.0"
   date: "2026-06-30"
   description: "rax HITL protocol — Human-In-The-Loop approval for agent actions"
 
 cli:
-  version: "0.2.1"
+  version: "0.3.0"
   binary: "rax"
   repo: "eqdmc/security"
 
 review:
-  version: "0.2.1"
+  version: "0.3.0"
 
 issue:
   default_repo: "eqdmc/security"
