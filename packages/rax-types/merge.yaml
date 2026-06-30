@@ -1,0 +1,46 @@
+# rax task type: merge — PR merge via merge queue
+type: merge
+label: "rax-merge"
+icon: "🔀"
+description: "PR merge — human approves, merge queue executes"
+close_on_verify: true
+required_labels:
+  - "agent-work"
+  - "rax-merge"
+schema:
+  type: object
+  required: [repo, pr]
+  properties:
+    repo:
+      type: string
+      description: "GitHub repo slug (org/repo)"
+    pr:
+      type: integer
+      description: "PR number"
+sha:
+  type: string
+  description: "Commit SHA being merged (optional)"
+danger_patterns:
+  - "git push --force"
+  - "gh pr merge"
+  - "gh pr merge --admin"
+  - "gh api.*pulls.*merge"
+  - "git merge --no-ff"
+verify_default: "gh pr view {pr} --json state,merged"
+rollback_default: "gh pr revert {pr} --single-commit 2>/dev/null || gh api repos/{repo}/pulls/{pr}/reverts -X POST"
+issue_template: |
+  ## Merge: {repo}#{pr}
+
+  {description}
+
+  **Action ID:** {action-id}
+  **Type:** merge
+
+  ### To approve
+  1. Review the PR diff: `gh pr view {pr} -R {repo}`
+  2. Run: `rax`
+  3. On success, this issue auto-closes.
+
+  ### Rollback
+  If the merge causes issues: `{rollback}`
+auto_merge: true

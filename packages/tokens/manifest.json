@@ -1,0 +1,239 @@
+{
+  "$schema": "https://eqdmc.github.io/schemas/token-manifest-v1.json",
+  "version": "1",
+  "updated_at": "2026-06-30T10:00:00Z",
+  "updated_by": "rax-2026-06-29-hardening-sprint-001",
+  "description": "SSOT for all tokens and credentials. Every token has a type, permissions, scope, and usage tracking. Agents query this manifest \u2014 never hardcode token values.",
+  "tokens": [
+    {
+      "id": "gh-eqdmc-admin",
+      "type": "github-fine-grained-pat",
+      "category": "github",
+      "title": "eqdmc-admin GitHub fine-grained PAT",
+      "created_at": "2026-06-30T00:00:00Z",
+      "expires_at": null,
+      "last_rotated": "2026-06-30T00:00:00Z",
+      "storage": {
+        "location": "~/.config/gh/hosts.yml",
+        "format": "gh hosts file (OAuth credential)",
+        "encrypted": false
+      },
+      "permissions": {
+        "model": "fine-grained",
+        "repositories": [
+          "eqdmc/security",
+          "eqdmc/dotfiles"
+        ],
+        "contents": "write",
+        "pull_requests": "write",
+        "metadata": "read",
+        "legacy_scopes_removed": [
+          "admin:ssh_signing_key",
+          "admin:public_key",
+          "workflow",
+          "gist"
+        ]
+      },
+      "usage": [
+        {
+          "function": "gh CLI \u2014 all authenticated operations",
+          "repo": "eqdmc/security",
+          "config_ref": "~/.config/gh/hosts.yml",
+          "placeholder": "$GH_TOKEN",
+          "machine": "asahi"
+        },
+        {
+          "function": "gh CLI \u2014 all authenticated operations",
+          "repo": "eqdmc/dotfiles",
+          "config_ref": "~/.config/gh/hosts.yml",
+          "placeholder": "$GH_TOKEN",
+          "machine": "asahi"
+        }
+      ],
+      "audit": {
+        "created_by": "human (via rax hardening sprint)",
+        "creation_url": "https://github.com/settings/tokens?type=beta",
+        "previous_token_id": "legacy-repo-scoped-pat (revoked)",
+        "previous_token_scopes": "admin:ssh_signing_key, admin:public_key, gist, read:org, repo, workflow"
+      },
+      "status": "active",
+      "notes": "Replaced legacy PAT with fine-grained token. admin:ssh_signing_key removed \u2014 agent can no longer mint signing keys.",
+      "_synced_github_login": "eqdmc-admin",
+      "_synced_github_id": 241564258,
+      "_synced_at": "2026-06-30T10:59:31.682987+00:00"
+    },
+    {
+      "id": "ssh-signing-eqdmc-admin",
+      "type": "ssh-key",
+      "category": "signing",
+      "title": "eqdmc-admin SSH signing key (ED25519)",
+      "created_at": "2026-06-29T20:21:00Z",
+      "expires_at": null,
+      "last_rotated": "2026-06-29T20:21:00Z",
+      "storage": {
+        "location": "~/.ssh/id_ed25519_signing",
+        "public_key": "~/.ssh/id_ed25519_signing.pub",
+        "format": "SSH private key (ED25519, passphrase-protected)",
+        "passphrase_location": "~/.ssh/signing-passphrase (0400, auto-loaded in ssh-agent)",
+        "encrypted": true,
+        "hardware_backed": false
+      },
+      "permissions": {
+        "model": "ssh-signing-key",
+        "github_key_id": 1028410,
+        "git_config": "user.signingkey = /home/z/.ssh/id_ed25519_signing.pub",
+        "allowed_signers": "~/.ssh/allowed_signers",
+        "verified_status": "G (Good signature)"
+      },
+      "usage": [
+        {
+          "function": "git commit signing",
+          "repo": "all eqdmc repos",
+          "config_ref": "git config --global user.signingkey",
+          "placeholder": "$SSH_SIGNING_KEY",
+          "machine": "asahi"
+        }
+      ],
+      "audit": {
+        "created_by": "agent (eqdmc-admin, previous session)",
+        "previous_key_id": "id_ed25519 (naked, no passphrase)",
+        "previous_key_action": "replaced \u2014 passphrase added for key-theft protection"
+      },
+      "status": "active",
+      "notes": "Passphrase-protected, not hardware-backed. YubiKey migration blocked on PIN (#54)."
+    },
+    {
+      "id": "ssh-auth-eqdmc-admin",
+      "type": "ssh-key",
+      "category": "authentication",
+      "title": "eqdmc-admin SSH authentication key (ED25519)",
+      "created_at": "2026-06-28T15:02:00Z",
+      "expires_at": null,
+      "last_rotated": "2026-06-28T15:02:00Z",
+      "storage": {
+        "location": "~/.ssh/id_ed25519",
+        "public_key": "~/.ssh/id_ed25519.pub",
+        "format": "SSH private key (ED25519, no passphrase)",
+        "encrypted": false
+      },
+      "permissions": {
+        "model": "ssh-auth-key",
+        "github_key_id": null,
+        "uses": [
+          "Git operations (git@github.com)",
+          "SSH into machines"
+        ],
+        "agent_loaded": true
+      },
+      "usage": [
+        {
+          "function": "Git authentication via SSH",
+          "repo": "all eqdmc repos",
+          "config_ref": "~/.ssh/config + ssh-agent",
+          "placeholder": "$SSH_AUTH_KEY",
+          "machine": "asahi"
+        },
+        {
+          "function": "SSH access to machines",
+          "config_ref": "~/.ssh/authorized_keys on target machines",
+          "machine": "asahi"
+        }
+      ],
+      "audit": {
+        "created_by": "system setup (2026-06-28)"
+      },
+      "status": "active",
+      "notes": "Authentication key. Not used for signing (separate key for that)."
+    }
+  ],
+  "token_types": {
+    "github-fine-grained-pat": {
+      "description": "GitHub fine-grained personal access token",
+      "api_verifiable": true,
+      "api_endpoint": "/user",
+      "fields": [
+        "repositories",
+        "permissions",
+        "expires_at"
+      ],
+      "rotation_period_days": 90,
+      "can_list_via_api": true
+    },
+    "github-pat": {
+      "description": "GitHub classic personal access token",
+      "api_verifiable": true,
+      "api_endpoint": "/user",
+      "fields": [
+        "scopes",
+        "expires_at"
+      ],
+      "rotation_period_days": 90,
+      "can_list_via_api": true
+    },
+    "github-app": {
+      "description": "GitHub App installation",
+      "api_verifiable": true,
+      "api_endpoint": "/app/installations",
+      "fields": [
+        "app_id",
+        "installation_id",
+        "permissions",
+        "repository_selection"
+      ],
+      "rotation_period_days": 365,
+      "can_list_via_api": true
+    },
+    "ssh-key": {
+      "description": "SSH key pair (authentication or signing)",
+      "api_verifiable": false,
+      "fields": [
+        "public_key",
+        "fingerprint",
+        "type",
+        "passphrase_protected"
+      ],
+      "rotation_period_days": 365,
+      "can_list_via_api": false
+    },
+    "api-key": {
+      "description": "Generic API key or secret",
+      "api_verifiable": false,
+      "fields": [
+        "service",
+        "endpoint",
+        "scopes"
+      ],
+      "rotation_period_days": 90,
+      "can_list_via_api": false
+    }
+  },
+  "categories": [
+    {
+      "id": "github",
+      "description": "GitHub authentication and API tokens"
+    },
+    {
+      "id": "signing",
+      "description": "Code signing keys (SSH, GPG)"
+    },
+    {
+      "id": "authentication",
+      "description": "Authentication keys (SSH, password managers)"
+    },
+    {
+      "id": "api",
+      "description": "Third-party API keys and secrets"
+    },
+    {
+      "id": "infrastructure",
+      "description": "Infrastructure credentials (cloud, CI, deployment)"
+    }
+  ],
+  "placeholder_prefix": "$TOKEN_",
+  "access_policy": {
+    "agent_readable": true,
+    "agent_writable": false,
+    "human_writable": true,
+    "audit_logged": true
+  }
+}

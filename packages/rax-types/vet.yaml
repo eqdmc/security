@@ -1,0 +1,49 @@
+# rax task type: vet — package vetting approval
+type: vet
+label: "rax-vet"
+icon: "🔬"
+description: "Package vetting request — agent requests human to vet a new package"
+close_on_verify: true
+required_labels:
+  - "agent-work"
+  - "rax-vet"
+schema:
+  type: object
+  required: [package, ecosystem]
+  properties:
+    package:
+      type: string
+      description: "Package ID (e.g. org.localsend.localsend_app)"
+    ecosystem:
+      type: string
+      enum: [flathub, npm, pypi, crates, github]
+      description: "Package ecosystem"
+    reason:
+      type: string
+      description: "Why the agent needs this package"
+    requested_by:
+      type: string
+      description: "Agent session that requested vetting"
+danger_patterns:
+  - "flatpak install"
+  - "pip install"
+  - "npm install"
+verify_default: "test -f $(git rev-parse --show-toplevel)/adrs/*-{eco}-{package}* 2>/dev/null && echo ADR_EXISTS || echo NO_ADR"
+rollback_default: "echo 'Remove: git revert <ADR commit> && flatpak uninstall -y {package}'"
+issue_template: |
+  ## Vet: {ecosystem}/{package}
+
+  {description}
+
+  **Requested by:** {requested_by}
+  **Action ID:** {action-id}
+
+  ### To process
+  1. Run vetting: `bin/vet "{package}" --eco {ecosystem} --adr`
+  2. If approved: `bin/vet-install "{package}" --eco {ecosystem}`
+  3. If rejected: `bin/vet-manifest reject "{package}" --reason "..."`
+
+  ### Auto-close
+  This issue auto-closes when `bin/vet-install` completes successfully.
+close_on_verify: true
+auto_merge: false

@@ -14,7 +14,11 @@
 #   RAX_POLICY_FILE   — danger patterns + thresholds (YAML)
 set -euo pipefail
 
-RAX_VERSION="2.0.0"
+_rax_path="$(realpath "$(command -v rax 2>/dev/null || echo "$0")" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")"
+_rax_bin="$(cd "$(dirname "$_rax_path")" && pwd)"
+_rax_repo="$(cd "$_rax_bin/.." && pwd)"
+source "$_rax_repo/lib/rax-config.sh"
+RAX_VERSION="${RAX_CLI_VERSION:-0.2.1}"
 
 # --- Args ---
 if [ "${1:-}" = "--version" ]; then
@@ -111,27 +115,34 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
     fi
 fi
 
-# --- Repo validation (before cd — checks invoker's repo, not Workdir's) ---
-if [ -n "$REPO_HEADER" ]; then
-    if [ -n "$DETECTED_REPO" ] && [ "$REPO_HEADER" != "$DETECTED_REPO" ]; then
-        echo ""
-        printf "${RED}${BOLD}BLOCKED:${RESET} Repository mismatch\n"
-        printf "  Header:   %s\n" "$REPO_HEADER"
-        printf "  Actual:   %s\n" "$DETECTED_REPO"
-        printf "  ${DIM}The staged action targets a different repo than the current directory.${RESET}\n"
-        exit 1
-    fi
-fi
-
-# --- Workdir validation ---
+# --- Workdir routing (always use Workdir if available — run from anywhere) ---
 if [ -n "$WORKDIR_HEADER" ]; then
     WORKDIR_RESOLVED=$(realpath "$WORKDIR_HEADER" 2>/dev/null || echo "")
     if [ -z "$WORKDIR_RESOLVED" ] || [ ! -d "$WORKDIR_RESOLVED" ]; then
         echo ""
         printf "${RED}${BOLD}BLOCKED:${RESET} Workdir does not exist: %s\n" "$WORKDIR_HEADER"
+        printf "  ${DIM}Expected at: %s${RESET}\n" "$WORKDIR_HEADER"
         exit 1
     fi
     cd "$WORKDIR_RESOLVED"
+fi
+
+# --- Repo validation (AFTER cd — checks the action's target repo) ---
+if [ -n "$REPO_HEADER" ]; then
+    _rax_repo_after=""
+    if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        _rax_url=$(git remote get-url origin 2>/dev/null || echo "")
+        if [ -n "$_rax_url" ]; then
+            _rax_repo_after=$(echo "$_rax_url" | sed -E 's#^(ssh://[^/]+/|git@[^:]+:|https?://([^@/]+@)?[^/]+/)##; s#\.git$##')
+        fi
+    fi
+    if [ -n "$_rax_repo_after" ] && [ "$REPO_HEADER" != "$_rax_repo_after" ]; then
+        echo ""
+        printf "${YELLOW}${WARN_ICON}  Repository mismatch — action targets %s, current dir is %s${RESET}\n" \
+            "$REPO_HEADER" "$_rax_repo_after"
+        printf "  ${DIM}Running anyway (Workdir resolves to the action's target repo).${RESET}\n"
+    fi
+    unset _rax_repo_after _rax_url
 fi
 
 # --- Validation warnings ---

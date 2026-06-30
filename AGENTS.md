@@ -2,6 +2,33 @@
 
 Security-as-code: automated vetting, policy engines, continuous scanning, agent governance.
 
+## rax quickstart — read this first
+
+Every action that needs human approval goes through `rax`. This is the only path.
+
+**If you need approval for something**, write a staged action:
+
+```bash
+cat > /tmp/rax-action.sh << 'EOF'
+#!/bin/bash
+# Purpose: <what you need>
+set -euo pipefail
+echo "run the command here"
+EOF
+chmod 600 /tmp/rax-action.sh
+export RAX_PENDING_FILE=/tmp/rax-action.sh
+```
+
+Then tell the human: **"rax action staged — run: rax"**
+
+After they run it, read the result:
+```bash
+cat "$RAX_RESULT_FILE" 2>/dev/null || echo '{"exit":-1}'
+```
+
+rax is auto-deployed on every machine via dotfiles `install.sh`. If it's not
+available, run: `bash dev/eqdmc/security/bin/rax-deploy`
+
 ## Structure
 
 ```
@@ -11,6 +38,20 @@ bin/
   vet-package      — DEPRECATED: use `vet` instead (npm-only legacy)
   vet-batch        — batch processor for package.json
   render-adr       — DEPRECATED: use `vet --adr` instead
+  rax              — HITL (Human In The Loop) approval tool
+  rax-deploy       — deploy rax system to any machine
+  rax-install      — install rax binary from GitHub Releases
+  rax-review       — monthly HITL audit summary
+  rax-issue        — GitHub issue management for rax actions
+  rax-feedback     — submit feedback on rax process (rating: good/slow/confusing/broken)
+  generate-configs — derive opencode.json from vetting-policy.json
+  token            — query token manifest (list, info, verify, sync-github)
+packages/
+  manifest.json    — SSOT of all vetted, pending, rejected packages
+  tokens/manifest.json — SSOT of all tokens, credentials, keys (agent-readable)
+  vetting-policy.json — canonical deny/allow patterns for enforcement
+  rax-policy.yml   — danger patterns + thresholds for HITL approval (git-tracked)
+  rax-env.sh       — per-platform env config (deployed to ~/.rax/env.sh)
 checks/
   adapters/
     npm.sh         — npm registry adapter
@@ -34,6 +75,144 @@ policy/
   vetting.yaml     — binary checklist definition (5 hard gates + 5 scored checks)
 adrs/
   0013-flathub-LocalSend.md  — example auto-generated ADR
+```
+
+## rax — HITL (Human In The Loop) approval system
+
+**Every action that needs human approval goes through rax.** rax is the only
+path for: package installs, git force-pushes, token operations, config changes,
+PR merges, and any other privileged operation.
+
+This is NOT optional. If your task requires human approval and you don't use
+rax, your work will be rejected by the guard layer.
+
+### When you MUST use rax
+
+| Situation | Why rax? | What happens if you don't |
+|-----------|----------|---------------------------|
+| Installing a new package (`vet-install`) | Human must approve each new dependency | Guard blocks, workflow fails |
+| Requesting a package be vetted (`vet-manifest request`) | Creates a tracked issue + rax action | Request is invisible, never processed |
+| Merging a PR | Human reviews diff before merge | Guard blocks `gh pr merge` |
+| Force-pushing a branch | Destructive — human must confirm | Guard blocks `git push --force` |
+| Creating/configuring tokens/secrets | Credential management requires oversight | Guard blocks `gh secret set` |
+| Running a command with `sudo` | Privileged escalation | Guard blocks `sudo` |
+| Modifying shell config (`~/.zshrc`, etc.) | Persists across sessions, affects all agents | Guard blocks writes to these paths |
+| Changing SSH/GPG config | Security-critical | Guard blocks writes to `~/.ssh/` |
+
+### The rax flow (step by step)
+
+```
+Step 1: Agent writes staged action
+        ───────────────────────────
+        cat > "$RAX_PENDING_FILE" << 'EOF'
+        #!/bin/bash
+        # Purpose: Install localsend (vetted, approved)
+        # Description: Installing already-vetted package
+        # Issue: 55
+        set -euo pipefail
+        flatpak install -y flathub org.localsend.localsend_app
+        EOF
+        chmod 600 "$RAX_PENDING_FILE"
+
+Step 2: Agent tells human "rax action staged for issue #55"
+
+Step 3: Human runs: rax
+        ───────────────────────────
+        - Sees the action code, risk score
+        - Reviews the exact commands
+        - Types 'y' to execute
+
+Step 4: rax runs the action, writes result
+        ───────────────────────────
+        - Creates GitHub issue comment
+        - Auto-closes issue on verified success
+        - Writes result to $RAX_RESULT_FILE
+
+Step 5: Agent reads result on next turn
+        ───────────────────────────
+        RESULT=$(cat "$RAX_RESULT_FILE" 2>/dev/null || echo '{"exit":-1}')
+        if [ "$(echo "$RESULT" | jq -r '.exit')" = "0" ]; then ... fi
+```
+
+### How rax is wired into your workflows
+
+These tools AUTOMATICALLY create rax actions when you use them:
+
+| Workflow | Auto-creates rax action? | For what? |
+|----------|--------------------------|-----------|
+| `bin/vet-manifest request <pkg>` | YES | Submits vetting request to human for approval |
+| `bin/vet-install <pkg>` | YES | Staged after vetting passes — human approves install |
+| `bin/rax-issue create` | YES | Creates GitHub issue + labels for any staged action |
+| `dotfiles-guard.py` (when blocking) | Steers to rax | Suggests using rax instead of the blocked command |
+
+If a command you need isn't covered by these workflows, stage a rax action
+manually using the template below.
+
+### Manual staging (for any action)
+
+```bash
+# Template — copy and fill in
+cat > "$RAX_PENDING_FILE" << 'EOF'
+#!/bin/bash
+# Purpose: <short title>
+# Description: <why this needs human approval>
+# Issue: <GitHub issue number>
+# Action-ID: rax-$(date +%Y-%m-%d)-<purpose>-$$
+set -euo pipefail
+<your commands here>
+EOF
+chmod 600 "$RAX_PENDING_FILE"
+```
+
+Then tell the human: "rax action staged — run `rax` to execute."
+
+### Reading results (after human runs rax)
+
+```bash
+RESULT=$(cat "$RAX_RESULT_FILE" 2>/dev/null || echo '{"exit": -1}')
+EXIT=$(echo "$RESULT" | jq -r '.exit // -1')
+case "$EXIT" in
+  0)
+    echo "APPROVED: action completed successfully"
+    echo "Output: $(echo "$RESULT" | jq -r '.output_tail // ""')"
+    ;;
+  *)
+    echo "REJECTED or FAILED (exit $EXIT)"
+    echo "Output: $(echo "$RESULT" | jq -r '.output_tail // ""')"
+    ;;
+esac
+```
+
+### Giving feedback on the rax process
+
+After a rax action completes, the human can give feedback to improve the
+protocol:
+
+```bash
+# Quick feedback (exit code after running rax)
+rax-feedback --action <action-id> --rating good|slow|confusing|broken --note "..."
+```
+
+This creates a structured feedback issue at eqdmc/security with labels:
+- `rax-feedback` — marks it as rax process feedback
+- `rax-{type}` — which action type generated the feedback
+- `rating:{good,slow,confusing,broken}` — what to improve
+
+All feedback is reviewed during monthly `rax-review` cycles. The aggregate
+metrics (average time-to-approval, failure rate per type, feedback trends)
+drive protocol improvements.
+
+### Checking for pending rax actions
+
+```bash
+# Is there a staged action waiting?
+if [ -f "$RAX_PENDING_FILE" ]; then
+  echo "Action pending — human needs to run: rax"
+  head -5 "$RAX_PENDING_FILE"
+fi
+
+# All open rax issues
+rax-issue list --open
 ```
 
 ## Universal vetting CLI (`bin/vet`)
@@ -154,22 +333,34 @@ Uses CVE_Prioritizer quadrant model (arxiv:2506.01220):
 
 ### Agents MUST NOT run raw package manager commands
 
-The following are BLOCKED at the guard layer in `eqdmc/dotfiles/guards/dotfiles-guard.py`:
+The following are **HARD-DENIED** at two layers:
 
-| Pattern | Example |
-|---------|---------|
-| `flatpak install` | `flatpak install org.foo.App` |
-| `flatpak update` / `flatpak upgrade` | `flatpak update` |
-| `dnf install` | `sudo dnf install htop` |
-| `dnf update` / `dnf upgrade` | `dnf update` |
-| `apt install` | `apt install foo` |
-| `brew install` | `brew install foo` |
-| `pip install` / `pip3 install` | `pip install requests` |
-| `cargo install` | `cargo install foo` |
-| `snap install` | `snap install foo` |
+1. `opencode.json` permission rules (agent-level — first match wins, `*: "ask"` is last)
+2. `dotfiles/guards/dotfiles-guard.py` regex patterns (guard-level)
 
-Additionally, `opencode.json` in both `eqdmc/security` and `eqdmc/dotfiles` marks all
-raw install commands as `"ask"` (user confirmation required).
+| Pattern | Example | Layer 1 | Layer 2 |
+|---------|---------|---------|---------|
+| `flatpak install/update/upgrade` | `flatpak install org.foo.App` | `deny` | regex |
+| `dnf install/update/upgrade` | `sudo dnf install htop` | `deny` | regex |
+| `apt install` / `apt-get install` | `apt install foo` | `deny` | regex |
+| `brew install/remove/uninstall/upgrade` | `brew install foo` | `deny` | regex |
+| `pip` / `pip3` / `pipx` / `uv` | `pip install requests` | `deny` | regex |
+| `python -m pip install` | `python3 -m pip install foo` | `deny` (as `pip install*`) | regex |
+| `npm install -g` / `yarn global` / `pnpm add -g` | `npm install -g typescript` | `deny` | regex |
+| `cargo install` | `cargo install foo` | `deny` | regex |
+| `snap install` | `snap install foo` | `deny` | regex |
+| `gem install` | `gem install rails` | `deny` | regex |
+| `go install` | `go install pkg@latest` | `deny` | regex |
+| `curl ... | sh` / `wget ... | sh` | `curl https://e.com/i.sh | sh` | `deny` | regex |
+| `cat install.sh | sh` | `cat install.sh | sh` | — | regex |
+| `bash -c "$(curl ...)"` | `bash -c "$(curl ...)"` | — | regex |
+| `eval "$(curl ...)"` | `eval "$(curl ...)"` | — | regex |
+| `source <(curl ...)` | `source <(curl ...)` | — | regex |
+| `base64 -d | bash` | `base64 -d payload | bash` | — | regex |
+| `curl ... -o script && bash script` | `curl -o script && bash script` | — | regex |
+| `deno install` / `bun install` | `deno install pkg` | — | regex |
+| env-var-prefixed variant of any above | `env FOO=bar flatpak install` | — | regex |
+| absolute-path variant of any above | `/usr/bin/flatpak install` | — | regex |
 
 ### Allowed install paths
 
@@ -185,6 +376,11 @@ bash packages/install.sh                           # bulk install of already vet
 4. Optionally installs
 5. Creates a git commit with all changes
 
+These paths are allow-listed in `opencode.json`:
+- `bin/vet*` → `allow`
+- `bash packages/install.sh*` → `allow`
+- `./bin/vet*` → allowed at the guard layer
+
 ### Auto-updates disabled
 
 Auto-update timers/services must be disabled on all managed machines so every
@@ -195,31 +391,203 @@ upgrade goes through re-vetting. Common services:
 When onboarding a new machine, check with: `systemctl --user list-timers` and
 `systemctl list-timers`.
 
-## Test procedure
+## SSOT manifest (`packages/manifest.json`)
 
-To verify enforcement is working:
+The SSOT manifest at `packages/manifest.json` is the single source of truth for
+all vetted, pending, and rejected packages. It is machine-readable JSON and
+git-tracked in `eqdmc/security`.
+
+### Agent discovery workflow
+
+Agents discover approved packages through `bin/vet-manifest`:
 
 ```bash
-# 1. Guard blocks raw installs
-echo '{"action":"exec","command":"flatpak install org.htop.Htop"}' \
-  | python3 guards/dotfiles-guard.py
-# → exits 2 with steer message to bin/vet-install
+# List all approved packages (with summary)
+bin/vet-manifest list
 
-# 2. Guard allows vetted workflows
-echo '{"action":"exec","command":"bash packages/install.sh"}' \
-  | python3 guards/dotfiles-guard.py
-# → exits 0
+# List only flathub packages
+bin/vet-manifest list --eco flathub
 
-# 3. Vet system correctly gates packages
-bin/vet org.gimp.GIMP --eco flathub
-# → BLOCKED (GPL-3.0+ copyleft license)
+# Search by name, tag, or capability
+bin/vet-manifest search "file transfer"
 
-bin/vet com.jgraph.drawio.desktop --eco flathub
-# → APPROVED (Apache-2.0, all gates pass)
+# Full details for a package
+bin/vet-manifest info org.localsend.localsend_app
 
-# 4. Full atomic workflow
+# Check if a package is approved/pending/rejected
+bin/vet-manifest status localsend
+
+# View pending requests
+bin/vet-manifest pending
+```
+
+### Requesting new packages
+
+Agents that need a package not in the manifest MUST submit a vetting request
+before installing:
+
+```bash
+# Submit a vetting request
+bin/vet-manifest request <package> --eco <ecosystem> --reason "Need X for Y"
+
+# Example:
+bin/vet-manifest request com.jgraph.drawio.desktop \
+  --eco flathub \
+  --reason "Need diagram editor for architecture documentation"
+```
+
+This:
+1. Creates a pending entry in `packages/manifest.json`
+2. Writes a handoff file to `.handoffs/request-<id>.md`
+3. The handoff is processed by the vetting workflow
+
+### Checking for upgrades
+
+All vetted packages are pinned by default (`"pinned": true`). Upgrades require
+re-vetting. Check for available upgrades:
+
+```bash
+# Check all packages
+bin/vet-check-updates
+
+# Check specific package
+bin/vet-check-updates org.localsend.localsend_app
+
+# Check all in one ecosystem
+bin/vet-check-updates --eco flathub
+
+# Create handoff notification if upgrades found
+bin/vet-check-updates --notify
+```
+
+### Release notes for agents
+
+Before requesting an upgrade, agents can review what's changed:
+
+```bash
+# Release notes for latest version
+bin/vet-release-notes org.localsend.localsend_app
+
+# Release notes for specific version
+bin/vet-release-notes org.localsend.localsend_app 1.18.0
+
+# Diff between two versions
+bin/vet-release-notes org.localsend.localsend_app --diff 1.17.0 1.18.0
+```
+
+### Upgrade workflow
+
+To upgrade an already-vetted package:
+
+```bash
+# 1. Check what's new
+bin/vet-release-notes <package> <new-version>
+
+# 2. Re-vet the new version
+bin/vet-install update <package> <new-version> --eco <ecosystem>
+```
+
+### Lifecycle state machine
+
+```
+UNKNOWN  ──vet-manifest request──►  PENDING
+PENDING  ──bin/vet (approve)──►     APPROVED (pinned=true)
+PENDING  ──vet-manifest reject──►   REJECTED
+APPROVED ──vet-check-updates──►     UPGRADE_AVAILABLE (still pinned)
+UPGRADE_AVAILABLE ──re-vet──►       APPROVED (new version, still pinned)
+```
+
+## Threat model (honest version)
+
+**This system prevents honest-mistake installs and provides an audit trail.**
+**It does NOT contain a compromised agent.**
+
+### Why containment fails
+
+1. **The gh token has admin:ssh_signing_key scope.** The agent can register new
+   signing keys to the GitHub account without any user intervention. This means
+   the agent can mint its own "Verified" signature badge — no key theft needed.
+   Fix: replace with a fine-grained token WITHOUT this scope.
+
+2. **The gh token has repo scope.** Full write access to all repos the user can
+   access. Combined with admin:ssh_signing_key, the agent can author, sign, and
+   land code on main through the merge queue.
+
+3. **The effective permission default is `allow`, not `ask`.** The resolved
+   opencode config for sessions started outside a project repo has no permission
+   block. Repo-level `opencode.json` deny rules are NOT loaded in these sessions.
+   The "tripwire" only exists when opencode is started from within a repo that
+   has an `opencode.json` with a permission block.
+
+4. **write and edit are allow.** An agent with write+exec can bypass the entire
+   command denylist by writing a script and executing it. The denylist is
+   enumerative and cannot anticipate every way to run untrusted code.
+
+### What this means
+
+All enforcement layers — denylist, guard, signing — are speed bumps against an
+honest agent making a mistake, not walls against a malicious or hijacked one.
+The vetting system correctly gates new package installations. But an agent that
+has gone rogue (or been hijacked) has the credentials, keys, and exec capability
+to forge approvals.
+
+### Required actions (priority order)
+
+1. **Scope the token.** Create a fine-grained GitHub token scoped to ONLY
+   eqdmc/security and eqdmc/dotfiles repos, WITHOUT `admin:ssh_signing_key`.
+   Replace `~/.config/gh/hosts.yml`. Keep old token until new one is verified.
+
+2. **Hardware-back the signing key.** YubiKey migration. Currently blocked on
+   unknown FIDO2 PIN (needs physical reinsertion). Until then, signing is
+   attribution-only, not security.
+
+3. **Add permission block to global config.** Add `"*": "ask"` to
+   `~/.config/opencode/opencode.jsonc` so unlisted commands prompt the user
+   regardless of where the session starts.
+
+4. **Network egress control.** The only thing that actually defeats write+exec.
+   Either firewall rules per agent UID or a sandboxed exec environment.
+
+5. **Policy→config generation.** Close the drift between `vetting-policy.json`
+   and `opencode.json`.
+
+## Test procedure
+
+### Layer 1: opencode.json permission structure
+
+```bash
+python3 tests/test-opencode-permissions.py --strict
+# → 0 errors on security/dotfiles
+```
+
+### Layer 2: Guard regression
+
+```bash
+bash tests/test-enforcement.sh
+# → 18/18 PASS
+```
+
+### Layer 3: Manifest integrity
+
+```bash
+# Verify manifest is valid JSON and has required fields
+jq -e '.version and .vetted and .updated_at' packages/manifest.json
+
+# Verify no duplicate package IDs
+jq '[.vetted[].id] | length == ([.vetted[].id] | unique | length)' packages/manifest.json
+
+# Verify all ADR files referenced exist
+jq -r '.vetted[] | .adr' packages/manifest.json | while read adr; do
+  [ -f "$adr" ] || echo "MISSING: $adr"
+done
+```
+
+### Layer 4: Full atomic workflow
+
+```bash
+# Vet → ADR → manifest → install → commit
 bin/vet com.jgraph.drawio.desktop --eco flathub --adr
-# → ADR generated, ready for manifest + git commit
+# → ADR generated, manifest updated
 ```
 
 ## Style

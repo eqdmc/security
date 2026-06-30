@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# rax-deploy — Deploy rax HITL system to any machine from git repo.
+#
+# Sets up:
+#   ~/.rax/policy.yml    — symlinked from repo (canonical, git-tracked)
+#   ~/.rax/state/        — result + audit log directory
+#   ~/.rax/env.sh        — platform env config (sourced by shell)
+#   ~/.local/bin/rax*    — symlinks to repo bin/ scripts
+#   Shell config          — sources rax-env.sh on login
+#
+# Usage:
+#   bash bin/rax-deploy                          # install from repo
+#   bash bin/rax-deploy --repo /path/to/security # explicit repo path
+#   bash bin/rax-deploy --bin-dir ~/.local/bin   # custom bin directory
+#   bash bin/rax-deploy --dry-run                # show what would change
+#
+# Idempotent: safe to run multiple times. Existing policy is backed up.
+set -euo pipefail
+
+# ── Config ────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+RAX_HOME="${RAX_HOME:-$HOME/.rax}"
+RAX_BIN_DIR="${RAX_BIN_DIR:-$HOME/.local/bin}"
+DRY_RUN=false
+TS=$(date +%s)
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) REPO_DIR="$2"; shift 2 ;;
+    --bin-dir) RAX_BIN_DIR="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    --help|-h)
+      echo "Usage: rax-deploy [--repo DIR] [--bin-dir DIR] [--dry-run]"
+      echo ""
+      echo "Deploys rax HITL system to this machine from the eqdmc/security repo."
+      echo ""
+      echo "  --repo DIR     Path to eqdmc/security repo (default: parent of bin/)"
+      echo "  --bin-dir DIR  Where to symlink rax scripts (default: ~/.local/bin)"
+      echo "  --dry-run      Print what would change without modifying anything"
+      exit 0
+      ;;
+    *) echo "Unknown: $1"; exit 1 ;;
+  esac
+done
+
+echo "=== rax-deploy ==="
+echo "  Repo:      $REPO_DIR"
+echo "  RAX_HOME:  $RAX_HOME"
+echo "  Bin dir:   $RAX_BIN_DIR"
+echo ""
+
+# ── Helper ────────────────────────────────────────────────────────
+symlink() {
+  local src="$1"
+  local dst="$2"
+  mkdir -p "$(dirname "$dst")"
+  if [ "$DRY_RUN" = true ]; then
+    if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
+      echo "  ok:     $dst (already linked)"
+    elif [ -e "$dst" ]; then
+      echo "  change: $dst → $src (backup existing)"
+    else
+      echo "  link:   $dst → $src"
+    fi
+    return
+  fi
+  if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
+    echo "  ok:     $dst"
+    return 0
+  fi
+  if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+    mv "$dst" "$dst.bak.$TS"
+    echo "  backup: $dst → $dst.bak.$TS"
+  fi
+  ln -sfn "$src" "$dst"
+  echo "  link:   $dst → $src"
+}
+
+# ── 1. Policy file ─────────────────────────────────────────────────
+echo "---"
+echo "Policy:"
+mkdir -p "$RAX_HOME"
+symlink "$REPO_DIR/packages/rax-policy.yml" "$RAX_HOME/policy.yml"
+
+# ── 2. State directory ────────────────────────────────────────────
+echo "---"
+echo "State:"
+if [ "$DRY_RUN" = false ]; then
+  mkdir -p "$RAX_HOME/state"
+fi
+echo "  dir:    $RAX_HOME/state/"
+
+# ── 3. Env config ─────────────────────────────────────────────────
+echo "---"
+echo "Shell config:"
+symlink "$REPO_DIR/packages/rax-env.sh" "$RAX_HOME/env.sh"
+
+# Source rax-env.sh from .bashrc / .zshrc
+_shell_rc=""
+if [ -f "$HOME/.bashrc" ]; then
+  _shell_rc="$HOME/.bashrc"
+elif [ -f "$HOME/.zshrc" ]; then
+  _shell_rc="$HOME/.zshrc"
+fi
+
+_rax_source_line="source \$HOME/.rax/env.sh 2>/dev/null || true"
+if [ -n "$_shell_rc" ]; then
+  if grep -q "rax/env.sh" "$_shell_rc" 2>/dev/null; then
+    echo "  ok:     rax-env.sh already sourced in $_shell_rc"
+  else
+    if [ "$DRY_RUN" = false ]; then
+      echo "" >> "$_shell_rc"
+      echo "# rax HITL system — environment configuration" >> "$_shell_rc"
+      echo "source \$HOME/.rax/env.sh 2>/dev/null || true" >> "$_shell_rc"
+      echo "  added:  source .rax/env.sh to $_shell_rc"
+    else
+      echo "  add:    source .rax/env.sh to $_shell_rc"
+    fi
+  fi
+fi
+unset _shell_rc _rax_source_line
+
+# ── 4. Bin scripts ────────────────────────────────────────────────
+echo "---"
+echo "Bin scripts:"
+mkdir -p "$RAX_BIN_DIR"
+
+_rax_scripts=("rax" "rax-install" "rax-review")
+for script in "${_rax_scripts[@]}"; do
+  if [ -f "$REPO_DIR/bin/$script" ]; then
+    symlink "$REPO_DIR/bin/$script" "$RAX_BIN_DIR/$script"
+  else
+    echo "  skip:   $script (not found in repo bin/)"
+  fi
+done
+unset _rax_scripts
+
+# ── 5. Verify ──────────────────────────────────────────────────────
+echo "---"
+echo "Verify:"
+if [ "$DRY_RUN" = false ]; then
+  # Verify policy is valid YAML
+  if python3 -c "
+import yaml, sys
+try:
+    with open('$RAX_HOME/policy.yml') as f:
+        yaml.safe_load(f)
+    print('  ok:     policy.yml is valid YAML')
+except yaml.YAMLError as e:
+    print(f'  FAIL:   policy.yml YAML error: {e}', file=sys.stderr)
+    sys.exit(1)
+except ImportError:
+    print('  warn:   pyyaml not installed — cannot validate policy')
+" 2>&1; then
+    :
+  fi
+
+  # Verify rax script is executable
+  RAX_BIN="$RAX_BIN_DIR/rax"
+  if [ -f "$RAX_BIN_DIR/rax" ]; then
+    echo "  ok:     $RAX_BIN"
+  else
+    echo "  warn:   rax not in bin dir (using repo bin/ directly)"
+  fi
+
+  # Verify env.sh sources without error
+  if bash -c "source '$RAX_HOME/env.sh' 2>&1" && [ -n "${RAX_PENDING_FILE:-}" ]; then
+    echo "  ok:     env.sh sources correctly"
+    echo "  Pending: $RAX_PENDING_FILE"
+    echo "  State:   $RAX_STATE_DIR"
+    echo "  Policy:  $RAX_POLICY_FILE"
+  fi
+
+  # Show rax version if available
+  if command -v rax &>/dev/null; then
+    echo "  rax:    $(rax --version 2>/dev/null || echo 'from repo')"
+  fi
+fi
+
+echo ""
+echo "=== Deploy complete ==="
+echo ""
+echo "  To use rax:"
+echo "    1. Open a new terminal (or source ~/.bashrc)"
+echo "    2. Write a staged action:"
+echo "       cat > \$RAX_PENDING_FILE << 'EOF'"
+echo "       #!/bin/bash"
+echo "       # Purpose: Example action"
+echo "       set -euo pipefail"
+echo '       echo "Hello from rax"'
+echo "       EOF"
+echo '       chmod 600 "$RAX_PENDING_FILE"'
+echo "    3. Run: rax"
+echo "    4. Result: \$RAX_STATE_DIR/last-result.json"
+echo "       The agent reads this on its next turn."
+echo ""

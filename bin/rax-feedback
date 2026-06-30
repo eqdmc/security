@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""rax-feedback — Submit feedback on the rax HITL process.
+
+Usage:
+  rax-feedback --action <action-id> --rating good|slow|confusing|broken
+  rax-feedback --action <action-id> --rating good --note "Worked great"
+  rax-feedback --list           # show recent feedback
+  rax-feedback --stats          # aggregate metrics
+
+Ratings:
+  good       — Worked as expected, smooth process
+  slow       — Too many steps, took too long
+  confusing  — Unclear what to do or what happened
+  broken     — Bug or error in the rax flow
+
+Feedback creates a GitHub issue on eqdmc/security with labels:
+  rax-feedback, rax-{type}, rating:{rating}
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+from rax_config import default_repo
+
+REPO = default_repo()
+AUDIT_FILE = os.path.expanduser("~/.rax/state/audit.jsonl")
+FEEDBACK_FILE = os.path.expanduser("~/.rax/state/feedback.jsonl")
+
+
+def submit_feedback(action_id: str, rating: str, note: str = ""):
+    """Submit feedback, creating a GitHub issue."""
+    if rating not in ("good", "slow", "confusing", "broken"):
+        print(f"Invalid rating: {rating} (use: good|slow|confusing|broken)")
+        sys.exit(1)
+
+    # Find the action in the audit log to get its type
+    action_type = "generic"
+    action_purpose = action_id
+    if os.path.exists(AUDIT_FILE):
+        with open(AUDIT_FILE) as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    if entry.get("action_id") == action_id:
+                        action_type = entry.get("category", "generic")
+                        action_purpose = entry.get("purpose", action_id)
+                        break
+                except json.JSONDecodeError:
+                    pass
+
+    # Write to local feedback log
+    os.makedirs(os.path.dirname(FEEDBACK_FILE), exist_ok=True)
+    feedback = {
+        "ts": int(datetime.now().timestamp()),
+        "action_id": action_id,
+        "rating": rating,
+        "note": note[:500],
+        "action_type": action_type,
+        "purpose": action_purpose,
+    }
+    with open(FEEDBACK_FILE, "a") as f:
+        f.write(json.dumps(feedback) + "\n")
+
+    # Create GitHub issue
+    title = f"[rax-feedback] {rating}: {action_purpose[:60]}"
+    body = (
+        f"## rax feedback\n\n"
+        f"**Action:** `{action_id}`\n"
+        f"**Rating:** {rating}\n"
+        f"**Type:** {action_type}\n"
+        f"**Purpose:** {action_purpose}\n\n"
+        f"### Note\n{note}\n\n"
+        f"---\n*Submitted via rax-feedback*"
+    )
+    labels = f"agent-work,rax-feedback,rating:{rating}"
+    if action_type != "generic":
+        labels += f",rax-{action_type}"
+
+    result = subprocess.run(
+        ["gh", "issue", "create", "-R", REPO,
+         "--title", title,
+         "--label", labels,
+         "--body", body],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print(f"Feedback submitted: {result.stdout.strip()}")
+    else:
+        print(f"Feedback logged locally (GitHub issue failed: {result.stderr})")
+
+    print(f"  Action: {action_id}")
+    print(f"  Rating: {rating}")
+    if note:
+        print(f"  Note: {note}")
+
+
+def list_feedback():
+    """Show recent feedback entries."""
+    if not os.path.exists(FEEDBACK_FILE):
+        print("No feedback yet.")
+        return
+    with open(FEEDBACK_FILE) as f:
+        for line in f:
+            try:
+                fb = json.loads(line)
+                ts = datetime.fromtimestamp(fb["ts"]).strftime("%Y-%m-%d")
+                print(f"  {ts} [{fb['rating']:10s}] {fb['action_id'][:30]:30s} {fb.get('purpose', '')[:50]}")
+            except json.JSONDecodeError:
+                pass
+
+
+def show_stats():
+    """Show aggregate feedback metrics."""
+    if not os.path.exists(FEEDBACK_FILE):
+        print("No feedback data yet.")
+        return
+
+    ratings = {"good": 0, "slow": 0, "confusing": 0, "broken": 0}
+    by_type = {}
+    total = 0
+
+    with open(FEEDBACK_FILE) as f:
+        for line in f:
+            try:
+                fb = json.loads(line)
+                r = fb.get("rating", "unknown")
+                ratings[r] = ratings.get(r, 0) + 1
+                t = fb.get("action_type", "generic")
+                by_type[t] = by_type.get(t, 0) + 1
+                total += 1
+            except json.JSONDecodeError:
+                pass
+
+    print(f"Total feedback entries: {total}")
+    print(f"\nRatings:")
+    for r, c in sorted(ratings.items()):
+        pct = c / total * 100 if total else 0
+        print(f"  {r:12s}: {c:3d} ({pct:.0f}%)")
+    print(f"\nBy action type:")
+    for t, c in sorted(by_type.items(), key=lambda x: -x[1]):
+        print(f"  {t:15s}: {c:3d}")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    if "--list" in sys.argv:
+        list_feedback()
+        sys.exit(0)
+
+    if "--stats" in sys.argv:
+        show_stats()
+        sys.exit(0)
+
+    action_id = None
+    rating = None
+    note = ""
+
+    for i, arg in enumerate(sys.argv[1:]):
+        if arg == "--action" and i + 1 < len(sys.argv) - 1:
+            action_id = sys.argv[i + 2]
+        elif arg == "--rating" and i + 1 < len(sys.argv) - 1:
+            rating = sys.argv[i + 2]
+        elif arg == "--note" and i + 1 < len(sys.argv) - 1:
+            note = sys.argv[i + 2]
+
+    if not action_id or not rating:
+        print("Usage: rax-feedback --action <id> --rating good|slow|confusing|broken [--note ...]")
+        sys.exit(1)
+
+    submit_feedback(action_id, rating, note)
+
+
+if __name__ == "__main__":
+    main()

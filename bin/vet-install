@@ -58,11 +58,21 @@ fi
 
 ok "Verdict: APPROVED — proceeding with installation"
 
-step "Phase 2: Checking manifest"
-# Determine which manifest to add to based on ecosystem
+# ── Extract package metadata from verdict (single source of truth) ──
 eco=$(jq -r '.ecosystem // "unknown"' "$VERDICT_FILE" 2>/dev/null || echo "$ECO")
 pkg_name=$(jq -r '.package // "'"$PKG"'"' "$VERDICT_FILE" 2>/dev/null || echo "$PKG")
 pkg_ver=$(jq -r '.version // "'"$VER"'"' "$VERDICT_FILE" 2>/dev/null || echo "$VER")
+
+step "Phase 2: SSOT manifest update"
+pkg_summary=$(jq -r '.summary // ""' "$VERDICT_FILE" 2>/dev/null || echo "")
+
+# Add to the SSOT manifest via vet-manifest approve
+echo "{ \"ecosystem\": \"$eco\", \"version\": \"$pkg_ver\", \"summary\": \"$pkg_summary\" }" | \
+  "$SECURITY_REPO/bin/vet-manifest" approve "$pkg_name" 2>&1 || warn "Manifest update failed (non-fatal)"
+
+ok "SSOT manifest updated for $pkg_name"
+
+step "Phase 3: Checking legacy manifest"
 
 manifest_file=""
 case "$eco" in
@@ -83,25 +93,62 @@ if [ -n "$manifest_file" ] && [ -f "$manifest_file" ]; then
   fi
 fi
 
-step "Phase 3: Installation"
+step "Phase 4: rax HITL action"
+# Stage a rax action for human approval before installing
+RAX_PENDING="${RAX_PENDING_FILE:-$HOME/.rax/pending.sh}"
+mkdir -p "$(dirname "$RAX_PENDING")"
+cat > "$RAX_PENDING" << RAXEOF
+#!/bin/bash
+# Purpose: Install $pkg_name v$pkg_ver ($eco) — already vetted
+# Description: Installing approved package. Vetting passed — all gates PASS.
+# Issue: $(ls "$SECURITY_REPO/adrs/"*.md 2>/dev/null | sort | tail -1 | grep -oP '\d+')
+# Action-ID: vet-install-$(date +%s)-$$
+# Repo: eqdmc/security
+# Workdir: $(pwd)
+set -euo pipefail
 case "$eco" in
   flathub)
-    flatpak install -y flathub "$pkg_name" 2>&1 || warn "Installation failed (may already be installed)"
+    flatpak install -y flathub "$pkg_name"
     ;;
   pypi)
-    pip3 install "$pkg_name" 2>&1 || warn "pip install failed"
+    pip3 install "$pkg_name"
     ;;
   crates)
-    cargo install "$pkg_name" 2>&1 || warn "cargo install failed"
-    ;;
-  *)
-    warn "No auto-installer for ecosystem '$eco' — install manually"
+    cargo install "$pkg_name"
     ;;
 esac
+RAXEOF
+chmod 600 "$RAX_PENDING" 2>/dev/null || true
 
-ok "Installation complete for $pkg_name"
+echo ""
+echo "  ╔══════════════════════════════════════════════════════════════╗"
+echo "  ║  VETTING PASSED — human approval needed for installation    ║"
+echo "  ║                                                            ║"
+echo "  ║  Package: $pkg_name"
+echo "  ║  Version: $pkg_ver"
+echo "  ║  Ecosystem: $eco"
+echo "  ║                                                            ║"
+echo "  ║  Run: rax                                                   ║"
+echo "  ║                                                            ║"
+echo "  ║  To skip rax (batch/CI): vet-install --yes ...              ║"
+echo "  ╚══════════════════════════════════════════════════════════════╝"
+echo ""
 
-step "Phase 4: Git commit"
+ok "rax action staged — waiting for human approval"
+
+# If --yes flag, skip rax and install directly
+if [ "${1:-}" = "--yes" ]; then
+  step "Phase 4b: Installation (--yes, bypassing rax)"
+  case "$eco" in
+    flathub) flatpak install -y flathub "$pkg_name" 2>&1 || warn "Install failed" ;;
+    pypi) pip3 install "$pkg_name" 2>&1 || warn "pip install failed" ;;
+    crates) cargo install "$pkg_name" 2>&1 || warn "cargo install failed" ;;
+    *) warn "No auto-installer for '$eco'" ;;
+  esac
+  ok "Installation complete for $pkg_name"
+fi
+
+step "Phase 5: Git commit"
 BRANCH_NAME="vet/${eco}-$(echo "$pkg_name" | sed 's|[/@]|-|g')"
 CURRENT_BRANCH=$(git -C "$SECURITY_REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 

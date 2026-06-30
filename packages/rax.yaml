@@ -1,0 +1,259 @@
+# rax protocol — single source of truth.
+# All rax tools derive config from this file at runtime.
+# Version 0.2.1 (early stage)
+protocol:
+  version: "0.2.1"
+  date: "2026-06-30"
+  description: "rax HITL protocol — Human-In-The-Loop approval for agent actions"
+
+cli:
+  version: "0.2.1"
+  binary: "rax"
+  repo: "eqdmc/security"
+
+review:
+  version: "0.2.1"
+
+issue:
+  default_repo: "eqdmc/security"
+  title_prefix: "[rax] "
+  auto_close_on_verify: true
+  labels:
+    - "agent-work"
+
+paths:
+  pending_file: "$HOME/.rax/pending.sh"
+  state_dir: "$HOME/.rax/state"
+  result_file: "$HOME/.rax/state/last-result.json"
+  audit_file: "$HOME/.rax/state/audit.jsonl"
+  policy_file: "$HOME/.rax/policy.yml"
+  env_file: "$HOME/.rax/env.sh"
+
+env:
+  opencode:
+    session_var: "OPENCODE_SESSION_ID"
+  claude_code:
+    session_var: "CLAUDE_SESSION_ID"
+  docker:
+    session_prefix: "docker-"
+  linux:
+    session_prefix: "linux-"
+
+policy:
+  high_risk_threshold: 30
+  protected_patterns:
+    - '>\s*~/\.(claude|opencode)/(settings\.json|rules/|skills/|agents/|commands/)'
+    - 'config-unlock'
+    - '>\s*~/\.rax/policy\.yml'
+  findings:
+    - pattern: '\brm\s+-(rf|fr)\s+/'
+      points: 30
+      level: critical
+      message: "rm -rf on root path"
+    - pattern: '\bsudo\s'
+      points: 30
+      level: critical
+      message: "uses sudo"
+    - pattern: 'curl.*\|\s*(ba)?sh|wget.*\|\s*(ba)?sh'
+      points: 30
+      level: critical
+      message: "pipes URL to shell"
+    - pattern: '\beval\s'
+      points: 30
+      level: critical
+      message: "uses eval"
+    - pattern: '\bgh\s+api\s+.*DELETE|gh\s+api\s+.*--method\s+DELETE'
+      points: 25
+      level: critical
+      message: "GitHub API DELETE"
+    - pattern: 'git\s+push\s+--force'
+      points: 20
+      level: high
+      message: "git force push"
+    - pattern: 'git\s+reset\s+--hard'
+      points: 20
+      level: high
+      message: "git hard reset"
+    - pattern: 'chmod\s+777'
+      points: 20
+      level: high
+      message: "chmod 777"
+    - pattern: '>\s*~/\.(ssh|gnupg)'
+      points: 20
+      level: high
+      message: "writes to sensitive dotfile"
+    - pattern: '>\s*~/\.(zshrc|zprofile|bashrc)'
+      points: 15
+      level: high
+      message: "modifies shell config"
+    - pattern: '(?i)(password|secret|token|api[._-]?key)'
+      points: 10
+      level: medium
+      message: "handles credentials"
+    - pattern: '\bbrew\s+install|pip3?\s+install|npm\s+install\s+-g|flatpak\s+install|dnf\s+install|apt\s+install|cargo\s+install|gem\s+install'
+      points: 10
+      level: medium
+      message: "installs packages"
+    - pattern: '\bgh\s+secret\s+set|gh\s+variable\s+set'
+      points: 10
+      level: medium
+      message: "sets GitHub secret or variable"
+    - pattern: '\b(chmod|chown)\s'
+      points: 5
+      level: medium
+      message: "changes permissions"
+    - pattern: '\b(launchctl|systemctl)\s+(load|unload|start|stop|enable|disable)'
+      points: 5
+      level: medium
+      message: "modifies system service"
+    - pattern: '\b(curl|wget)\s'
+      points: 5
+      level: low
+      message: "network requests"
+    - pattern: '\bgh\s+api\s+'
+      points: 5
+      level: low
+      message: "GitHub API call"
+
+types:
+  merge:
+    label: "rax-merge"
+    icon: "🔀"
+    description: "PR merge — human approves, merge queue executes"
+    close_on_verify: true
+    danger_patterns:
+      - "git push --force"
+      - "gh pr merge"
+      - "gh api.*pulls.*merge"
+    verify_default: "gh pr view {pr} --json state,merged"
+    rollback_default: "gh pr revert {pr} --single-commit 2>/dev/null || gh api repos/{repo}/pulls/{pr}/reverts -X POST"
+    issue_template: |
+      ## Merge: {repo}#{pr}
+
+      {description}
+
+      **Action ID:** {action-id}
+      **Type:** merge
+
+      ### To approve
+      1. Review the PR diff: `gh pr view {pr} -R {repo}`
+      2. Run: `rax`
+      3. On success, this issue auto-closes.
+
+      ### Rollback
+      If the merge causes issues: `{rollback}`
+    auto_merge: true
+
+  vet:
+    label: "rax-vet"
+    icon: "🔬"
+    description: "Package vetting request — agent requests human to vet a new package"
+    close_on_verify: true
+    schema_required: [package, ecosystem]
+    danger_patterns:
+      - "flatpak install"
+      - "pip install"
+      - "npm install"
+    verify_default: "test -f $(git rev-parse --show-toplevel)/adrs/*-{eco}-{package}* 2>/dev/null && echo ADR_EXISTS || echo NO_ADR"
+    rollback_default: "echo 'Remove: git revert <ADR commit> && flatpak uninstall -y {package}'"
+    issue_template: |
+      ## Vet: {ecosystem}/{package}
+
+      {description}
+
+      **Requested by:** {requested_by}
+      **Action ID:** {action-id}
+
+      ### To process
+      1. Run vetting: `bin/vet "{package}" --eco {ecosystem} --adr`
+      2. If approved: `bin/vet-install "{package}" --eco {ecosystem}`
+      3. If rejected: `bin/vet-manifest reject "{package}" --reason "..."`
+
+      ### Auto-close
+      This issue auto-closes when `bin/vet-install` completes successfully.
+
+  install:
+    label: "rax-install"
+    icon: "📦"
+    description: "Package installation — install an already-vetted package"
+    close_on_verify: true
+    schema_required: [package, ecosystem]
+    danger_patterns:
+      - "flatpak install"
+      - "pip install"
+      - "npm install"
+      - "sudo"
+    verify_default: "case {eco} in flathub) flatpak list | grep -q {package};; pip) pip3 list 2>/dev/null | grep -qi {package};; npm) npm list -g 2>/dev/null | grep -qi {package};; esac"
+    rollback_default: "case {eco} in flathub) flatpak uninstall -y {package};; pip) pip3 uninstall -y {package};; npm) npm uninstall -g {package};; esac"
+    issue_template: |
+      ## Install: {ecosystem}/{package} v{version}
+
+      {description}
+
+      **Action ID:** {action-id}
+
+      ### To approve
+      This package has been vetted and approved. Run `rax` to install.
+
+  secrets:
+    label: "rax-secrets"
+    icon: "🔑"
+    description: "Secrets management — tokens, credentials, API keys, encryption"
+    close_on_verify: false
+    schema_required: [operation, target]
+    danger_patterns:
+      - "(?i)(password|secret|token|api[._-]?key)"
+      - "gh secret set"
+      - "sops"
+      - "age"
+    verify_default: "echo 'Manual verification required'"
+    rollback_default: "echo 'Restore previous value from backup'"
+    issue_template: |
+      ## Secrets: {operation} {target}
+
+      {description}
+
+      **Action ID:** {action-id}
+
+      ### Warning
+      This action handles credentials. Review carefully.
+
+  config:
+    label: "rax-config"
+    icon: "⚙️"
+    description: "Configuration changes — shell config, editor settings, dotfiles"
+    close_on_verify: true
+    schema_required: [target, change_summary]
+    danger_patterns:
+      - "> ~/.zshrc"
+      - "> ~/.bashrc"
+      - "> ~/.gitconfig"
+      - "> ~/.ssh/"
+    verify_default: "diff -q {backup} {target} 2>/dev/null && echo VERIFIED || echo CHECK"
+    rollback_default: "mv {backup} {target} 2>/dev/null || echo 'No backup — manual rollback'"
+    issue_template: |
+      ## Config: {target}
+
+      {description}
+
+      **Change:** {change_summary}
+      **Action ID:** {action-id}
+
+  generic:
+    label: "rax-generic"
+    icon: "📋"
+    description: "Generic/unclassified HITL action"
+    close_on_verify: true
+    danger_patterns: []
+    verify_default: "echo 'No automatic verification defined'"
+    rollback_default: "echo 'No automatic rollback defined'"
+    issue_template: |
+      ## {title}
+
+      {description}
+
+      **Action ID:** {action-id}
+      **Type:** generic
+
+      ### To approve
+      Review the action above. Run `rax` to execute.
