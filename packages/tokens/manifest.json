@@ -1,8 +1,8 @@
 {
   "$schema": "https://eqdmc.github.io/schemas/token-manifest-v1.json",
   "version": "1",
-  "updated_at": "2026-06-30T16:56:00Z",
-  "updated_by": "agent (merge-bot key installed)",
+  "updated_at": "2026-06-30T16:58:00Z",
+  "updated_by": "agent (capability verification)",
   "description": "SSOT for all tokens and credentials. Every token has a type, permissions, scope, and usage tracking. Agents query this manifest \u2014 never hardcode token values.",
   "tokens": [
     {
@@ -190,7 +190,15 @@
       },
       "status": "active",
       "notes": "GitHub App for agent API access. Active. Covers all eqdmc repos. Use gh-app-auth to authenticate.",
-      "auth_command": "gh-app-auth --client-id Iv23lia83jBPuXt5WMfD --install-id 143517448"
+      "auth_command": "gh-app-auth --client-id Iv23lia83jBPuXt5WMfD --install-id 143517448",
+      "last_verified": "2026-06-30T16:58:00Z",
+      "verified_permissions": {
+        "actions": "read-write",
+        "issues": "write",
+        "pull_requests": "write",
+        "contents": "write",
+        "metadata": "read"
+      }
     },
     {
       "id": "github-merge-bot",
