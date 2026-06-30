@@ -641,3 +641,61 @@ General:       https://github.com/organizations/eqdmc/settings
 Apps:          https://github.com/organizations/eqdmc/settings/apps
 Installations: https://github.com/organizations/eqdmc/settings/installations
 ```
+
+### GitHub App permission update flow (rax type)
+
+When a GitHub App's permissions are changed, the installation must approve the
+update before the new permissions take effect. This is a multi-step HITL flow:
+
+1. Change permissions in app settings:
+   `/organizations/{org}/settings/apps/{app-name}/permissions`
+2. Approve the update in the installation:
+   `/organizations/{org}/settings/installations/{install-id}/permissions/update`
+3. Generate a fresh installation token (old tokens retain old permissions)
+
+This is a `rax` action type — always stage through rax for proper HITL handling.
+
+### GitHub App permission update flow
+When you change an app's permissions, the installation must approve the update.
+The flow is always:
+
+```
+1. Change: /organizations/{org}/settings/apps/{app-name}/permissions
+2. Approve: /organizations/{org}/settings/installations/{install-id}
+   → Look for "Permissions update requested" banner → Click Review
+3. Refresh token: run gh-app-auth again (old token retains old permissions)
+```
+
+This is a HITL/rax action type because it requires human UI interaction.
+Never skip the approval step — old permissions persist until approved.
+
+### GitHub App setup — complete end-to-end workflow
+
+When setting up a new GitHub App for agent access, the full HITL flow is:
+
+**Stage 1: Create the app** (human, via UI)
+1. Visit `https://github.com/settings/apps/new`
+2. Set name, homepage, permissions, generate private key
+3. URL: `/settings/apps/new`
+
+**Stage 2: Install on org** (human, via UI)
+1. Visit `https://github.com/settings/apps/{app-name}/installations`
+2. Select org, set repository access, install
+3. URL: `/organizations/{org}/settings/installations/{install-id}`
+
+**Stage 3: Adjust permissions** (human, via UI)
+1. Visit `https://github.com/organizations/{org}/settings/apps/{app-name}/permissions`
+2. Change permission → Save
+3. URL: `/organizations/{org}/settings/apps/{app-name}/permissions`
+
+**Stage 4: Approve permission update** (human, via UI)
+1. Visit `https://github.com/organizations/{org}/settings/installations/{install-id}`
+2. Click "Permissions update requested" banner → Review → Confirm
+3. URL: `/organizations/{org}/settings/installations/{install-id}/permissions/update`
+
+**Stage 5: Configure agent auth** (agent, automated)
+1. Place private key at `~/.ssh/{app-name}.pem` (chmod 600)
+2. Run: `gh-app-auth --client-id {client-id} --install-id {install-id}`
+3. Verify: `gh issue create -R any-repo --title t --body t --dry-run`
+
+Each stage is a separate rax action type with exact URLs and UI instructions.
