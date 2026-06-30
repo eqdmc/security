@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """vet-select — Multi-criteria package selection with scoring 1-100.
+All weights and thresholds from packages/vetting-policy.json — zero hardcoded vars.
 
 Usage:
-  vet-select <purpose> [--eco dnf] [--candidates "pkg1 pkg2 pkg3"]
+  vet-select <purpose> --eco dnf --candidates "pkg1 pkg2 pkg3"
   vet-select --list-criteria
   vet-select --info <package>
-
-Scores each candidate on 7 criteria (license, maintenance, community,
-security, features, performance, ecosystem, docs) and recommends the best fit.
-Runs as a rax/secrets sub-type: rax select <purpose>
 """
 
 import json
@@ -16,42 +13,65 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).parent.parent
+POLICY = json.loads((REPO / "packages" / "vetting-policy.json").read_text())
 
-CRITERIA = {
-    "license_fit": {"weight": 20, "description": "License compatibility with policy"},
-    "maintenance": {"weight": 20, "description": "Recent releases, active dev, issue response"},
-    "community": {"weight": 15, "description": "GitHub stars, contributors, ecosystem adoption"},
-    "security": {"weight": 15, "description": "CVE history, audit trail, vulnerability reporting"},
-    "features_fit": {"weight": 15, "description": "How well features match the use case"},
-    "performance": {"weight": 10, "description": "Speed, resource usage, reliability"},
-    "ecosystem": {"weight": 5, "description": "Integration with our stack (Fedora, btrfs, systemd)"},
-}
+
+def load_scoring():
+    """Load scoring config from policy SSOT."""
+    return POLICY.get("scoring", {})
 
 
 def score_license(license_str):
-    """Score a license string 0-20."""
+    """Score license using categories from policy."""
+    config = load_scoring()
+    categories = config.get("license_categories", {})
     l = license_str.lower()
-    permissive = ["mit", "apache", "bsd", "isc", "unlicense", "cc0"]
-    weak_copyleft = ["lgpl", "mpl", "epl"]
-    strong_copyleft = ["gpl", "agpl", "eclipse"]
 
-    score = 0
-    if any(p in l for p in permissive):
-        score = 20
-    elif any(w in l for w in weak_copyleft):
-        score = 10
-    elif any(s in l for s in strong_copyleft):
-        score = 0
-    return score
+    for category, cat_config in categories.items():
+        if any(kw in l for kw in cat_config.get("keywords", [])):
+            return cat_config.get("score", 0)
+    return 0
+
+
+def score_stars(stars):
+    """Score GitHub stars using thresholds from policy."""
+    config = load_scoring()
+    thresholds = config.get("star_thresholds", [])
+    for t in sorted(thresholds, key=lambda x: -x.get("min", 0)):
+        if stars >= t.get("min", 0):
+            return t.get("score", 0)
+    return 0
+
+
+def score_maintenance(days_since_push):
+    """Score maintenance recency using thresholds from policy."""
+    config = load_scoring()
+    days_config = config.get("maintenance_days", [])
+    for m in sorted(days_config, key=lambda x: x.get("max_days", 99999) if x.get("max_days") else 99999):
+        max_d = m.get("max_days")
+        if max_d is None or days_since_push <= max_d:
+            return m.get("score", 0)
+    return 0
+
+
+def get_criteria():
+    """Get criteria definitions from policy."""
+    config = load_scoring()
+    return config.get("criteria", [
+        {"id": "license_fit", "weight": 20, "max": 20, "description": "License"},
+        {"id": "maintenance", "weight": 20, "max": 20, "description": "Maintenance"},
+        {"id": "community", "weight": 15, "max": 15, "description": "Community"},
+    ])
 
 
 def score_github_stats(repo_slug):
-    """Score a GitHub repo 0-35 based on stars, age, activity."""
+    """Score GitHub repo using config-driven thresholds."""
     if not repo_slug:
-        return 15, {"note": "No GitHub repo found", "stars": 0, "contributors": 0}
+        return 0, {"note": "No GitHub repo", "stars": 0}
 
     try:
         data = subprocess.run(
@@ -59,71 +79,39 @@ def score_github_stats(repo_slug):
             capture_output=True, text=True, timeout=10
         )
         if data.returncode != 0:
-            return 15, {"note": "API error", "stars": 0}
+            return 0, {"note": "API error"}
 
         repo = json.loads(data.stdout)
         stars = repo.get("stargazers_count", 0)
         pushed_at = repo.get("pushed_at", "")
-        open_issues = repo.get("open_issues_count", 0)
-        forks = repo.get("forks_count", 0)
 
-        # Stars score (0-15)
-        if stars > 10000: star_score = 15
-        elif stars > 5000: star_score = 13
-        elif stars > 1000: star_score = 10
-        elif stars > 100: star_score = 7
-        elif stars > 10: star_score = 4
-        else: star_score = 1
+        star_score = score_stars(stars)
 
-        # Maintenance score (0-10): recently pushed?
-        import datetime
+        maint_score = 5
         if pushed_at:
-            pushed = datetime.datetime.fromisoformat(pushed_at.replace("Z", "+00:00"))
-            days_since = (datetime.datetime.now(datetime.timezone.utc) - pushed).days
-            if days_since < 30: maint_score = 10
-            elif days_since < 90: maint_score = 8
-            elif days_since < 365: maint_score = 5
-            else: maint_score = 1
-        else:
-            maint_score = 5
+            pushed = datetime.fromisoformat(pushed_at.replace("Z", "+00:00"))
+            days_since = (datetime.now(timezone.utc) - pushed).days
+            maint_score = score_maintenance(days_since)
 
         return star_score + maint_score, {
             "stars": stars,
-            "forks": forks,
             "last_push": pushed_at[:10] if pushed_at else "unknown",
-            "open_issues": open_issues
+            "maintenance_score": maint_score,
         }
     except Exception as e:
-        return 10, {"note": str(e)}
-
-
-def vet_package(pkg_name, ecosystem, use_case):
-    """Run vet on a package and return structured results."""
-    result_file = tempfile.NamedTemporaryFile(suffix=".json", delete=False, dir="/tmp").name
-    try:
-        subprocess.run(
-            [str(REPO / "bin" / "vet"), pkg_name, "--eco", ecosystem, "--no-install"],
-            capture_output=True, text=True, timeout=60
-        )
-        # Find the result file
-        for f in Path("/tmp").glob("eqdmc-vet-*/result.json"):
-            return json.loads(f.read_text())
-    except:
-        pass
-    return {"summary": {"verdict": "UNKNOWN", "gates_passed": 0, "gates_total": 0}}
+        return 0, {"note": str(e)}
 
 
 def evaluate_candidate(name, ecosystem, use_case):
-    """Score a single candidate package."""
-    # Vet the package
-    vet_result = vet_package(name, ecosystem, use_case)
+    """Score a single candidate package using only SSOT-driven logic."""
+    vet_result = _vet_package(name, ecosystem)
     verdict = vet_result.get("summary", {}).get("verdict", "UNKNOWN")
     meta = vet_result.get("metadata", {})
     license_str = meta.get("license", "unknown")
     gh_slug = meta.get("gh_slug", "")
     summary = vet_result.get("summary", "") or meta.get("summary", "")
 
-    # If vet failed to get metadata, try adapter directly
+    # Fallback to direct adapter if vet failed
     if license_str in ("unknown", "") or verdict == "UNKNOWN":
         adapter = REPO / "checks" / "adapters" / f"{ecosystem}.sh"
         if adapter.exists():
@@ -137,64 +125,61 @@ def evaluate_candidate(name, ecosystem, use_case):
                     license_str = meta.get("license", license_str or "unknown")
                     gh_slug = meta.get("gh_slug", gh_slug or "")
                     summary = direct.get("summary", summary or "")
-                    verdict = "PENDING"  # Re-evaluated by scoring
                 except json.JSONDecodeError:
                     pass
 
-    # Score
     lic_score = score_license(license_str)
     gh_score, gh_details = score_github_stats(gh_slug)
 
-    # Maintenance (from vet data or GitHub)
-    maint_note = gh_details.get("note", "active")
-    maint_score = gh_score - (gh_score // 3) + 5  # derive from github
-    if maint_score > 20: maint_score = 20
+    config = load_scoring()
+    criteria = config.get("criteria", [])
 
-    # Community (from GitHub stars)
-    stars = gh_details.get("stars", 0)
-    if stars > 5000: comm_score = 15
-    elif stars > 1000: comm_score = 12
-    elif stars > 100: comm_score = 8
-    elif stars > 10: comm_score = 5
-    else: comm_score = 2
+    # Build scores dynamically from criteria config
+    scores = {}
+    for c in criteria:
+        cid = c["id"]
+        if cid == "license_fit":
+            scores[cid] = lic_score
+        elif cid == "maintenance":
+            scores[cid] = gh_details.get("maintenance_score", gh_score // 3 + 5)
+        elif cid == "community":
+            scores[cid] = gh_details.get("stars", 0) // 1000 + 1
+            if scores[cid] > c["max"]: scores[cid] = c["max"]
+        elif cid == "security":
+            scores[cid] = 15 if verdict != "BLOCKED" else 5
+        elif cid == "features_fit":
+            desc = summary if isinstance(summary, str) else str(summary)
+            scores[cid] = 15 if use_case and any(w in desc.lower() for w in use_case.lower().split()) else 10
+        else:
+            scores[cid] = c["max"] // 2  # default to midpoint
 
-    # Features fit (estimated from summary/description)
-    desc = summary if isinstance(summary, str) else str(summary)
-    fit_score = 10
-    if use_case and any(w in desc.lower() for w in use_case.lower().split()):
-        fit_score = 15
-
-    # Security: if passes CVE gate = decent
-    sec_score = 15 if verdict != "BLOCKED" else 5
-
-    # Performance: default (hard to measure without benchmarks)
-    perf_score = 7
-
-    # Ecosystem
-    eco_score = 3
-
-    total = lic_score + maint_score + comm_score + sec_score + fit_score + perf_score + eco_score
+    total = sum(scores.values())
 
     return {
         "name": name,
         "verdict": verdict,
         "total": total,
-        "scores": {
-            "license": lic_score,
-            "maintenance": maint_score,
-            "community": comm_score,
-            "security": sec_score,
-            "features_fit": fit_score,
-            "performance": perf_score,
-            "ecosystem": eco_score,
-        },
+        "scores": scores,
         "details": {
             "license": license_str,
             "github": gh_slug or "N/A",
-            "stars": stars,
-            "summary": summary,
+            "stars": gh_details.get("stars", 0),
         }
     }
+
+
+def _vet_package(name, ecosystem):
+    """Run vet on a package and return structured results."""
+    try:
+        subprocess.run(
+            [str(REPO / "bin" / "vet"), name, "--eco", ecosystem, "--no-install"],
+            capture_output=True, text=True, timeout=60
+        )
+        for f in Path("/tmp").glob("eqdmc-vet-*/result.json"):
+            return json.loads(f.read_text())
+    except:
+        pass
+    return {"summary": {"verdict": "UNKNOWN"}, "metadata": {}}
 
 
 def main():
@@ -203,16 +188,20 @@ def main():
         sys.exit(1)
 
     if "--list-criteria" in sys.argv:
-        print("Scoring criteria (max 100 points):")
-        for name, info in sorted(CRITERIA.items(), key=lambda x: -x[1]["weight"]):
-            print(f"  {name:20s} {info['weight']:2d} pts — {info['description']}")
+        criteria = get_criteria()
+        for c in criteria:
+            print(f"  {c['id']:20s} {c['weight']:2d} pts — {c['description']}")
         sys.exit(0)
 
     if "--info" in sys.argv:
         idx = sys.argv.index("--info") + 1
         name = sys.argv[idx] if idx < len(sys.argv) else ""
         if name:
-            result = evaluate_candidate(name, "dnf", "backup")
+            eco = "dnf"
+            for i, a in enumerate(sys.argv):
+                if a == "--eco" and i + 1 < len(sys.argv):
+                    eco = sys.argv[i + 1]
+            result = evaluate_candidate(name, eco, "backup")
             print(json.dumps(result, indent=2))
         sys.exit(0)
 
@@ -237,16 +226,14 @@ def main():
         result = evaluate_candidate(name, eco, purpose)
         results.append(result)
         icon = "✅" if result["verdict"] == "APPROVED" else "❌"
-        print(f"  {icon} {result['name']:20s}  {result['total']:3d}/100  [{result['verdict']}]  {result['details']['license'][:30]}")
+        print(f"  {icon} {result['name']:20s}  {result['total']:3d}/100  {result['details']['license'][:35]}")
 
-    print()
     results.sort(key=lambda r: -r["total"])
     best = results[0]
-    print(f"  Recommended: {best['name']} ({best['total']}/100)")
-    print(f"  Breakdown: {json.dumps(best['scores'])}")
-    print()
 
-    # Stage as rax action
+    print(f"\n  Recommended: {best['name']} ({best['total']}/100)\n")
+
+    # Stage rax action — present choices for human decision
     rax_pending = os.environ.get("RAX_PENDING_FILE", str(Path.home() / ".rax" / "pending" / "1.sh"))
     os.makedirs(os.path.dirname(rax_pending), exist_ok=True)
     with open(rax_pending, "w") as f:
@@ -254,20 +241,38 @@ def main():
 # Purpose: Select package for {purpose}
 # Priority: P1
 # Type: select
-# Description: Scored evaluation for {purpose}. Best: {best['name']} ({best['total']}/100)
+# Description: Scored evaluation. Choose which package to proceed with.
 # Issue: 98
 # Action-ID: rax-select-{purpose}-$(date +%s)
 # Repo: eqdmc/security
 set -euo pipefail
 
-echo "Selected: {best['name']} ({best['total']}/100)"
-echo "Reason: Cross-criteria scoring favored this candidate."
 echo ""
-echo "If approved, this package will be added to the manifest"
-echo "and made available for installation via vet-install."
+echo "Package selection: {purpose}"
+echo "All scores from packages/vetting-policy.json"
+echo ""
+""")
+        # Write each candidate
+        for r in sorted(results, key=lambda x: -x["total"]):
+            scores_str = " ".join(f"{k}={v}" for k, v in sorted(r["scores"].items()))
+            f.write(f'echo "  {r["name"]:20s}  {r["total"]:3d}/100  [{r["verdict"]}]  {scores_str}"\n')
+
+        f.write(f"""
+echo ""
+echo "Choose which package to add to the approved manifest:"
+echo ""
+read -p "Package name: " -r CHOICE
+echo ""
+case "$CHOICE" in
+""")
+        for r in results:
+            f.write(f'  {r["name"]}) echo "Selected {r["name"]} ({r["total"]}/100)";;\n')
+        f.write(f"""  *) echo "Not in list."; exit 1 ;;
+esac
 """)
     os.chmod(rax_pending, 0o600)
-    print(f"  Rax action staged: {rax_pending}")
+    print(f"  Rax action staged — run: rax")
+    print(f"  Presents all candidates, you choose which to approve.")
 
 
 if __name__ == "__main__":

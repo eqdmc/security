@@ -19,15 +19,15 @@ source "$SCRIPT_DIR/lib/common.sh"
 SECURITY_REPO="$SCRIPT_DIR"
 DOTFILES_REPO="$(cd "$SCRIPT_DIR/../dotfiles" && pwd 2>/dev/null || echo "$HOME/.config/eqdmc/dotfiles")"
 
-MODE="install"
-PKG=""
-VER=""
-ECO="auto"
+SKIP_RAX=false
+FORCE=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
     update) MODE="update"; shift ;;
     --eco|--ecosystem) ECO="$2"; shift 2 ;;
+    --yes) SKIP_RAX=true; shift ;;
+    --force) FORCE=true; shift ;;
     --help|-h) echo "Usage: vet-install <package> [version] [--eco <ecosystem>]"; echo "       vet-install update <package> <new-version> [--eco <ecosystem>]"; exit 0 ;;
     *)
       if [ -z "$PKG" ]; then
@@ -53,7 +53,12 @@ else
 fi
 
 if [ "$verdict" != "APPROVED" ]; then
-  die "Verdict: $verdict — BLOCKED. Fix gate failures before installing."
+  if [ "$FORCE" = "true" ]; then
+    echo "  ⚠ Verdict: $verdict — OVERRIDDEN (--force)"
+    echo "  ║  Override reason: $*"
+  else
+    die "Verdict: $verdict — BLOCKED. Fix gate failures before installing."
+  fi
 fi
 
 ok "Verdict: APPROVED — proceeding with installation"

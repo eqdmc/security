@@ -29,12 +29,14 @@ VER="latest"
 ECO="auto"
 GEN_ADR=false
 SKIP_INSTALL=false
+FORCE=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --eco|--ecosystem) ECO="$2"; shift 2 ;;
     --adr) GEN_ADR=true; shift ;;
     --no-install|--skip-install) SKIP_INSTALL=true; shift ;;
+    --force) FORCE=true; shift ;;
     -*)
       if [ -z "$PKG" ]; then
         echo "Usage: vet <package> [version] [--eco <ecosystem>] [--adr]" >&2
