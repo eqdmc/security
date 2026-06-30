@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""permissions — Query, audit, and monitor GitHub permissions across eqdmc.
+
+Usage:
+  permissions scan                       # scan all repos/org for current permissions
+  permissions list                       # show current permission manifest
+  permissions catalog                    # show all available GitHub permission types
+  permissions diff                       # compare current state vs manifest
+  permissions changelog [--days 7]       # fetch recent GitHub platform changes
+  permissions monitor [--interval 24h]   # continuous platform change monitoring
+
+All data is stored in packages/permissions/manifest.json (agent-readable SSOT).
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+
+REPO_DIR = Path(__file__).parent.parent
+MANIFEST_PATH = REPO_DIR / "packages" / "permissions" / "manifest.json"
+
+CHANGELOG_URL = "https://github.blog/changelog/"
+CHANGELOG_CACHE = REPO_DIR / "packages" / "permissions" / "changelog-cache.json"
+
+
+def load_manifest():
+    if MANIFEST_PATH.exists():
+        with open(MANIFEST_PATH) as f:
+            return json.load(f)
+    return {}
+
+
+def save_manifest(m):
+    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(MANIFEST_PATH, "w") as f:
+        json.dump(m, f, indent=2)
+        f.write("\n")
+
+
+def gh_api(path):
+    try:
+        r = subprocess.run(["gh", "api", path], capture_output=True, text=True, timeout=15)
+        if r.returncode == 0:
+            return json.loads(r.stdout)
+        return None
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+
+
+def scan():
+    """Scan all accessible repos and org for current permissions."""
+    print("Scanning GitHub permissions...")
+    result = {"scanned_at": datetime.now(timezone.utc).isoformat(), "repos": []}
+
+    # Scan repos we can access
+    for repo_name in ["eqdmc/security"]:  # limited by token scope
+        data = gh_api(f"repos/{repo_name}")
+        if data:
+            result["repos"].append({
+                "name": repo_name,
+                "visibility": data.get("visibility"),
+                "permissions": data.get("permissions", {}),
+                "archived": data.get("archived"),
+                "topics": data.get("topics", []),
+                "language": data.get("language"),
+            })
+            print(f"  {repo_name}: {data.get('visibility')}, perms={list(data.get('permissions', {}).keys())}")
+
+    # Scan rulesets
+    rulesets = gh_api("repos/eqdmc/security/rulesets")
+    if rulesets:
+        result["rulesets"] = [
+            {"name": r["name"],
+             "enforcement": r["enforcement"],
+             "source": r.get("source", "repo"),
+             "rules": [rule["type"] for rule in r.get("rules", [])],
+             "bypass_actors": [
+                f"{a.get('actor_type')}:{a.get('actor_id')}({a.get('bypass_mode')})"
+                for a in r.get("bypass_actors", [])
+             ]}
+            for r in rulesets
+        ]
+        for rs in result["rulesets"]:
+            print(f"  Ruleset: {rs['name']} ({rs['enforcement']}) — {', '.join(rs['rules'])}")
+
+    # Scan org info
+    org_data = gh_api("orgs/eqdmc")
+    if org_data:
+        result["org"] = {
+            "plan": org_data.get("plan", {}).get("name"),
+            "default_permission": org_data.get("default_repository_permission"),
+            "members_can_create": org_data.get("members_can_create_repositories"),
+        }
+
+    # Scan code scanning alerts
+    cs = gh_api("repos/eqdmc/security/code-scanning/analyses")
+    result["code_scanning"] = len(cs) if isinstance(cs, list) else 0
+
+    # Scan secret scanning alerts
+    ss = gh_api("repos/eqdmc/security/secret-scanning/alerts")
+    result["secret_scanning"] = len(ss) if isinstance(ss, list) else 0
+
+    return result
+
+
+def fetch_changelog(days=7):
+    """Fetch and parse recent GitHub changelog entries."""
+    import urllib.request
+    import html.parser
+
+    print(f"Fetching GitHub Changelog (last {days} days)...")
+
+    cache = []
+    if CHANGELOG_CACHE.exists():
+        with open(CHANGELOG_CACHE) as f:
+            try:
+                cache = json.load(f)
+            except json.JSONDecodeError:
+                cache = []
+
+    # Fetch the changelog page
+    try:
+        req = urllib.request.Request(
+            CHANGELOG_URL,
+            headers={"User-Agent": "eqdmc-permissions-monitor/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            html = r.read().decode("utf-8")
+    except Exception as e:
+        print(f"  Could not fetch changelog: {e}")
+        return cache
+
+    # Simple extraction — find changelog entries
+    entries = []
+    # Look for article entries with dates
+    date_pattern = re.compile(r'(\d{4}-\d{2}-\d{2})')
+    title_pattern = re.compile(r'<h[23][^>]*>(.*?)</h[23]>', re.DOTALL)
+    link_pattern = re.compile(r'href="(/changelog/\d+[^"]*)"')
+
+    dates = date_pattern.findall(html)
+    titles = title_pattern.findall(html)
+    links = link_pattern.findall(html)
+
+    cutoff = datetime.now(timezone.utc).timestamp() - (days * 86400)
+
+    for i, (date_str, title, link) in enumerate(zip(dates, titles, links)):
+        try:
+            entry_date = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            if entry_date.timestamp() < cutoff:
+                continue
+            clean_title = re.sub(r'<[^>]+>', '', title).strip()
+            entries.append({
+                "date": date_str,
+                "title": clean_title,
+                "url": f"https://github.blog{link}",
+                "source": "github-changelog",
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except ValueError:
+            continue
+
+    if entries:
+        print(f"  Found {len(entries)} new changelog entries")
+        # Merge with cache (deduplicate by URL)
+        existing_urls = {e.get("url") for e in cache}
+        for e in entries:
+            if e["url"] not in existing_urls:
+                cache.append(e)
+
+        with open(CHANGELOG_CACHE, "w") as f:
+            json.dump(cache, f, indent=2)
+
+    return [e for e in cache if not entry_date or
+            datetime.fromisoformat(e["date"]).replace(tzinfo=timezone.utc).timestamp() > cutoff]
+
+
+def categorize_changelog(entries):
+    """Categorize changelog entries by topic and impact."""
+    topics = {
+        "api": "API changes — new endpoints, deprecations, version bumps",
+        "security": "Security — new permissions, audit features, secret scanning",
+        "actions": "GitHub Actions — new features, runners, workflow changes",
+        "code_scanning": "Code scanning — new queries, analysis features",
+        "packages": "Packages — container registry, package management",
+        "issues": "Issues/Projects — new issue features, project boards",
+        "enterprise": "Enterprise — org-level features, SAML, audit log",
+        "other": "Other — general platform changes",
+    }
+
+    categorized = []
+    for e in entries:
+        title = e.get("title", "").lower()
+        text = e.get("title", "")
+        if any(k in title for k in ["api", "rest", "graphql"]):
+            topic = "api"
+        elif any(k in title for k in ["secret", "security", "vulnerability", "audit"]):
+            topic = "security"
+        elif any(k in title for k in ["action", "workflow", "runner"]):
+            topic = "actions"
+        elif any(k in title for k in ["code scanning", "codeql"]):
+            topic = "code_scanning"
+        elif any(k in title for k in ["package", "container", "registr"]):
+            topic = "packages"
+        elif any(k in title for k in ["issue", "project", "milestone"]):
+            topic = "issues"
+        elif any(k in title for k in ["enterprise", "saml", "org"]):
+            topic = "enterprise"
+        else:
+            topic = "other"
+
+        categorized.append({**e, "topic": topic, "topic_description": topics[topic]})
+
+    return categorized
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+    args = sys.argv[2:]
+
+    if cmd == "scan":
+        scan_result = scan()
+        # Merge with existing manifest
+        manifest = load_manifest()
+        manifest["last_scan"] = scan_result
+        manifest["updated_at"] = datetime.now(timezone.utc).isoformat()
+        save_manifest(manifest)
+        print(f"\nSaved to {MANIFEST_PATH}")
+
+    elif cmd == "list":
+        manifest = load_manifest()
+        print(json.dumps(manifest, indent=2))
+
+    elif cmd == "catalog":
+        manifest = load_manifest()
+        catalog = manifest.get("permission_catalog", {})
+        for level, perms in catalog.items():
+            print(f"\n{level.upper()} PERMISSIONS:")
+            for key, desc in sorted(perms.items()):
+                print(f"  {key:30s}  {desc}")
+
+    elif cmd == "diff":
+        manifest = load_manifest()
+        last = manifest.get("last_scan", {})
+        print("Last scan: ", last.get("scanned_at", "never"))
+        print("Token:     ", manifest.get("token", {}).get("id", "unknown"))
+        print("Rulesets:  ", len(last.get("rulesets", [])))
+        print("Repos:     ", len(last.get("repos", [])))
+
+    elif cmd == "changelog":
+        days = 7
+        for i, a in enumerate(args):
+            if a == "--days" and i + 1 < len(args):
+                days = int(args[i + 1])
+        entries = fetch_changelog(days)
+        categorized = categorize_changelog(entries)
+
+        if not categorized:
+            print(f"No changelog entries in the last {days} days.")
+            return
+
+        print(f"\nGitHub changelog — last {days} days ({len(categorized)} entries):\n")
+        for e in categorized:
+            print(f"  [{e['topic']:15s}] {e['date']} — {e['title'][:80]}")
+            print(f"           {e['url']}")
+            print()
+
+        # Save categorized entries
+        cache_path = CHANGELOG_CACHE
+        categorized_entries = []
+        if cache_path.exists():
+            with open(cache_path) as f:
+                try:
+                    categorized_entries = json.load(f)
+                except json.JSONDecodeError:
+                    pass
+        # Update with categories
+        existing_urls = {e.get("url") for e in categorized_entries}
+        for e in categorized:
+            if e["url"] not in existing_urls:
+                categorized_entries.append(e)
+        with open(cache_path, "w") as f:
+            json.dump(categorized_entries, f, indent=2)
+
+    elif cmd == "monitor":
+        interval = "24h"
+        for i, a in enumerate(args):
+            if a == "--interval" and i + 1 < len(args):
+                interval = args[i + 1]
+
+        seconds = 86400
+        if interval.endswith("h"):
+            seconds = int(interval[:-1]) * 3600
+        elif interval.endswith("m"):
+            seconds = int(interval[:-1]) * 60
+
+        print(f"Monitor mode — checking every {interval}")
+        print("(One-shot for now — run this periodically or via cron)\n")
+
+        # One-shot: scan + changelog
+        scan_result = scan()
+        entries = fetch_changelog(7)
+        categorized = categorize_changelog(entries)
+
+        manifest = load_manifest()
+        manifest["last_scan"] = scan_result
+        manifest["last_changelog"] = [e for e in categorized if e.get("topic") in ("security", "api")]
+        manifest["updated_at"] = datetime.now(timezone.utc).isoformat()
+        save_manifest(manifest)
+
+        security_entries = [e for e in categorized if e["topic"] == "security"]
+        api_entries = [e for e in categorized if e["topic"] == "api"]
+
+        print(f"  Security changes: {len(security_entries)}")
+        for e in security_entries:
+            print(f"    ⚠  {e['title'][:100]}")
+        print(f"  API changes: {len(api_entries)}")
+        for e in api_entries:
+            print(f"    {e['title'][:100]}")
+
+    else:
+        print(f"Unknown: {cmd}")
+        print(__doc__)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

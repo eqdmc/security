@@ -1,0 +1,118 @@
+{
+  "$schema": "https://eqdmc.github.io/schemas/permissions-manifest-v1.json",
+  "version": "1",
+  "updated_at": "2026-06-30T11:00:00Z",
+  "updated_by": "agent (session permissions-audit)",
+  "github_feature_level": "2026-06-30",
+  "note": "GitHub Enterprise features, org-level policies, and app permissions. All GitHub API permissions documented with their scopes and current usage.",
+  "token": {
+    "id": "gh-eqdmc-admin",
+    "type": "github-fine-grained-pat",
+    "repositories": ["eqdmc/security"],
+    "permissions": {
+      "contents": "write",
+      "pull_requests": "write",
+      "metadata": "read",
+      "issues": "read"
+    },
+    "missing_repos": ["eqdmc/dotfiles", "eqdmc/agent-harness", "eqdmc/infra"],
+    "legacy_scopes_removed": ["admin:ssh_signing_key", "admin:public_key", "workflow", "gist"],
+    "audit_note": "Created in hardening sprint. Scoped to security only. Cross-repo access will use GitHub App."
+  },
+  "github_apps": {
+    "eqdmc-merge-bot": {
+      "app_id": 4125320,
+      "install_id": 142188577,
+      "repository_selection": "all",
+      "permissions": {
+        "checks": "write",
+        "contents": "write",
+        "issues": "write",
+        "metadata": "read",
+        "pull_requests": "write"
+      },
+      "ruleset_bypass": {
+        "main-protection": "always",
+        "signed-commits": "none",
+        "merge-queue": "always"
+      },
+      "note": "Auto-merge bot. Bypasses PR/CI requirements but NOT signing. Merge commits are GitHub-signed."
+    },
+    "eqdmc-agent-bot": {
+      "status": "pending",
+      "note": "To be created via rax action at ~/.rax/pending.sh. Will authenticate agents for cross-repo API access."
+    }
+  },
+  "repository_rulesets": {
+    "eqdmc/security": [
+      {"name": "main-protection", "enforcement": "active", "source": "org",
+       "rules": ["non_fast_forward", "deletion", "required_linear_history", "pull_request", "required_status_checks"],
+       "bypass_actors": {"eqdmc-merge-bot": "always"}},
+      {"name": "signed-commits", "enforcement": "active", "source": "repo",
+       "rules": ["required_signatures"],
+       "bypass_actors": {}},
+      {"name": "merge-queue", "enforcement": "active", "source": "org",
+       "rules": ["merge_queue"],
+       "bypass_actors": {"org_admin": "always", "eqdmc-merge-bot": "always"}}
+    ]
+  },
+  "org_features": {
+    "eqdmc": {
+      "plan": "free",
+      "default_repo_permission": "none",
+      "members_can_create_repos": false,
+      "two_factor_required": false,
+      "dependabot_enabled": false,
+      "secret_scanning_alerts": 3,
+      "code_scanning_analyses": 3,
+      "github_actions": "not configured",
+      "packages_registry": "not configured"
+    }
+  },
+  "permission_catalog": {
+    "repository": {
+      "actions": "Work with GitHub Actions — secrets, variables, workflows, runners",
+      "administration": "Repository administration — rename, transfer, delete, visibility",
+      "checks": "Create and update check runs and check suites",
+      "contents": "Repository contents — code, commits, branches, tags, releases",
+      "dependabot_secrets": "Dependabot secrets",
+      "deployments": "Deployments and deployment environments",
+      "environments": "Deployment environments",
+      "issues": "Issues, labels, milestones, and projects",
+      "members": "Organization members — only for org-owned repos",
+      "metadata": "Repository metadata — read-only, auto-included",
+      "pull_requests": "Pull requests and their reviews, comments, and merges",
+      "secret_scanning_alerts": "Secret scanning alerts",
+      "secrets": "Repository secrets",
+      "security_events": "Code scanning and Dependabot alerts",
+      "statuses": "Commit statuses",
+      "variables": "Repository variables",
+      "webhooks": "Repository webhooks"
+    },
+    "organization": {
+      "administration": "Organization administration",
+      "custom_repository_roles": "Custom repository roles",
+      "members": "Organization members",
+      "organization_advisors": "Organization advisors (code review, security)",
+      "organization_announcement_banners": "Organization announcement banners",
+      "organization_events": "Organization events log",
+      "organization_hooks": "Organization webhooks",
+      "organization_personal_access_token_requests": "Review PAT requests",
+      "organization_personal_access_tokens": "Manage PATs for the org",
+      "organization_plan": "Organization plan information (read-only)",
+      "organization_projects": "Organization projects",
+      "organization_secrets": "Organization secrets",
+      "organization_self_hosted_runners": "Self-hosted runners",
+      "organization_user_blocking": "Block and unblock users",
+      "organization_variables": "Organization variables"
+    },
+    "account": {
+      "email_addresses": "Email addresses (read-only)",
+      "followers": "Followers (read-only)",
+      "git_ssh_keys": "Git SSH keys",
+      "gpg_keys": "GPG keys",
+      "profile": "Profile information (read-only)",
+      "ssh_signing_keys": "SSH signing keys"
+    }
+  }
+}
