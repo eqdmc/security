@@ -162,6 +162,16 @@ if [ -f ~/.ssh/eqdmc-agent-bots.pem ] && command -v gh-app-auth >/dev/null 2>&1;
     audit "Layer 9: cross-repo access (agent-harness)" true
   fi
 fi
+
+# ── Layer 10: Merge monitor ───────────────────────────────────────
+if [ -f "$SCRIPT_DIR/bin/merge-monitor" ]; then
+  audit "Layer 10: merge-monitor exists" true
+  if [ -f "$HOME/.rax/merge-tracker.json" ]; then
+    _tracked=$(jq '.prs | length // 0' "$HOME/.rax/merge-tracker.json" 2>/dev/null || echo 0)
+    audit "Layer 10: merge-monitor tracking $_tracked PR(s)" true
+  fi
+fi
+
 echo ""
 echo "=== Threat model (verified live) ==="
 echo "  Platform: Fedora Asahi, opencode v1.17.11 (no PreToolUse hooks)"

@@ -716,3 +716,23 @@ through the standard review/merge flow.
 
 ### Issue format
 Issues use the PR triage template with labels: `pr-failure`, `triage`.
+
+### Merge monitor
+
+PRs are tracked after being added to the merge queue. The merge monitor
+checks their status and reports when they land or fail:
+
+```bash
+# Check current status of all tracked PRs
+python3 bin/merge-monitor --watch
+
+# Add a PR to tracking
+python3 bin/merge-monitor --add eqdmc/security <pr-number>
+
+# Show all tracked PRs
+python3 bin/merge-monitor --status
+```
+
+When a PR merges, the monitor comments on the tracking issue.
+When a PR fails (conflict, CI failure), the monitor auto-creates a
+triage issue for the fix PR.
