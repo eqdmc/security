@@ -30,24 +30,20 @@ collect_feedback() {
 
   case "$method" in
     yn-goal-text)
-      printf "  ${BOLD}Q1${RESET}  Were you satisfied with this rax action? ${DIM}(y/n, Enter=skip)${RESET}\n  > "
-      read -r sat
-      echo ""
-      printf "  ${BOLD}Q2${RESET}  Did this achieve what you needed? ${DIM}(y/n, Enter=skip)${RESET}\n  > "
-      read -r achieved
-      echo ""
+      printf "  ${BOLD}Q1${RESET}  Were you satisfied? ${DIM}(y/n)${RESET} "
+      read -n 1 sat; echo
+      printf "  ${BOLD}Q2${RESET}  Did this achieve what you needed? ${DIM}(y/n)${RESET} "
+      read -n 1 achieved; echo
       printf "  ${BOLD}Q3${RESET}  What could be improved? ${DIM}(Enter to skip)${RESET}\n  > "
       read -r improve
       echo ""
       ;;
 
     scale-goal-text)
-      printf "  ${BOLD}Q1${RESET}  How satisfied are you? ${DIM}(1-5, 1=not at all 5=very, 0=skip)${RESET}\n  > "
-      read -r sat
-      echo ""
-      printf "  ${BOLD}Q2${RESET}  Did this achieve what you needed? ${DIM}(y/n, Enter=skip)${RESET}\n  > "
-      read -r achieved
-      echo ""
+      printf "  ${BOLD}Q1${RESET}  How satisfied? ${DIM}(1-5, 0=skip)${RESET} "
+      read -n 1 sat; echo
+      printf "  ${BOLD}Q2${RESET}  Achieved what you needed? ${DIM}(y/n)${RESET} "
+      read -n 1 achieved; echo
       printf "  ${BOLD}Q3${RESET}  What could be improved? ${DIM}(Enter to skip)${RESET}\n  > "
       read -r improve
       echo ""

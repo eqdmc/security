@@ -1,8 +1,8 @@
 {
   "$schema": "https://eqdmc.github.io/schemas/token-manifest-v1.json",
   "version": "1",
-  "updated_at": "2026-06-30T12:15:00Z",
-  "updated_by": "agent (final metadata \u2014 app active)",
+  "updated_at": "2026-06-30T12:35:00Z",
+  "updated_by": "agent (corrected URL)",
   "description": "SSOT for all tokens and credentials. Every token has a type, permissions, scope, and usage tracking. Agents query this manifest \u2014 never hardcode token values.",
   "tokens": [
     {
@@ -169,7 +169,9 @@
         "app_id": 4182479,
         "install_id": "143517448",
         "note": "Run gh-app-auth --app-id <ID> --install-id <ID> to configure",
-        "client_id": "Iv23lia83jBPuXt5WMfD"
+        "client_id": "Iv23lia83jBPuXt5WMfD",
+        "install_url": "https://github.com/organizations/eqdmc/settings/installations/143517448",
+        "settings_url": "https://github.com/organizations/eqdmc/settings/apps/eqdmc-agent-bots"
       },
       "usage": [
         {

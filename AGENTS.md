@@ -607,3 +607,37 @@ bin/vet com.jgraph.drawio.desktop --eco flathub --adr
 
 - Conventional commits: feat/fix/refactor/docs/test/chore
 - All changes go through PRs to main
+
+## GitHub UI URL patterns (for agent instructions)
+
+When instructing humans to change GitHub settings, use exact URLs.
+Every tab has a direct URL — never tell them to "find" something.
+
+### Organization-level app settings
+```
+App settings page:    /organizations/{org}/settings/apps/{app-name}
+Permissions tab:      /organizations/{org}/settings/apps/{app-name}/permissions
+Installation page:    /organizations/{org}/settings/installations/{install-id}
+```
+
+### Repository settings
+```
+General:       /organizations/{org}/repos/{repo}/settings
+Rulesets:      /organizations/{org}/repos/{repo}/settings/rules
+Secrets:       /organizations/{org}/repos/{repo}/settings/secrets/actions
+Environments:  /organizations/{org}/repos/{repo}/settings/environments
+```
+
+### User settings
+```
+Tokens:        https://github.com/settings/tokens?type=beta
+Apps:          https://github.com/settings/apps
+SSH keys:      https://github.com/settings/keys
+```
+
+### Organization settings (eqdmc)
+```
+General:       https://github.com/organizations/eqdmc/settings
+Apps:          https://github.com/organizations/eqdmc/settings/apps
+Installations: https://github.com/organizations/eqdmc/settings/installations
+```
