@@ -170,17 +170,19 @@ for t in m.get('tokens', []):
         found = True
         break
 if not found:
+    placeholder='$TOKEN_'$(echo "$provider" | tr '[:lower:]' '[:upper:]')'_'$(echo "$name" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
     entry = {
         'id': '$token_id',
         'type': '$type',
         'category': '$provider',
         'title': '$purpose',
+        'placeholder': placeholder,
         'created_at': '$timestamp',
         'status': 'active',
         'storage': {'location': '$output_file', 'format': 'sops+age (YubiKey)', 'encrypted': True},
         'permissions': {'scope': '$permissions'},
-        'usage': [{'function': '$usage', 'repo': '$provider'}],
-        'notes': 'Provisioned via rax/secrets'
+        'usage': [{'function': '$usage', 'placeholder': placeholder, 'config_ref': 'sops:' + '$output_file'}],
+        'notes': 'Provisioned via rax/secrets. Resolve via: token-resolve ' + placeholder
     }
     m.setdefault('tokens', []).append(entry)
 m['updated_at'] = '$timestamp'
@@ -199,11 +201,14 @@ print('    ✅ Token manifest updated')
     echo "    ✅ Source file removed: ${source_file}"
   fi
 
+  local placeholder='$TOKEN_'$(echo "$provider" | tr '[:lower:]' '[:upper:]')'_'$(echo "$name" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
   echo ""
   echo "  ✅ rax/secrets: ${name} provisioned successfully"
   echo "     Encrypted at: ${output_file}"
   echo "     Token ID:     ${provider}-${name}"
-  echo "     To decrypt:   sops --decrypt ${output_file}"
+  echo "     Placeholder:  ${placeholder}"
+  echo "     Resolve:      token-resolve ${placeholder}"
+  echo "     List all:     token-resolve --list"
 }
 
 export -f rax_secrets_provision

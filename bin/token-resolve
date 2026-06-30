@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""token-resolve — Resolve $TOKEN_* placeholders from the token manifest SSOT.
+
+Usage:
+  token-resolve $TOKEN_GITHUB_MERGE_BOT     # resolve a single placeholder
+  token-resolve --file <path>                # resolve all placeholders in a file
+  token-resolve --check <path>               # verify no unresolved placeholders
+  token-resolve --list                       # list all available placeholders
+
+Placeholders follow the pattern: $TOKEN_{CATEGORY}_{NAME}
+Defined in: packages/tokens/manifest.json → tokens[].usage[].placeholder
+Values come from: eqdmc/eqdmc/secrets/{name}.enc.{pem|env} (decrypted via sops)
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).parent.parent
+MANIFEST_PATH = REPO / "packages" / "tokens" / "manifest.json"
+SECRETS_DIR = Path.home() / "dev" / "eqdmc" / "eqdmc" / "secrets"
+
+PLACEHOLDER_RE = re.compile(r'\$TOKEN_([A-Z_]+)')
+
+
+def load_manifest():
+    with open(MANIFEST_PATH) as f:
+        return json.load(f)
+
+
+def build_placeholder_index():
+    """Build a map of placeholder → token info from the manifest."""
+    m = load_manifest()
+    index = {}
+    for token in m.get("tokens", []):
+        for usage in token.get("usage", []):
+            ph = usage.get("placeholder", "")
+            if ph:
+                index[ph] = {
+                    "token_id": token["id"],
+                    "type": token.get("type", ""),
+                    "category": token.get("category", ""),
+                    "function": usage.get("function", ""),
+                    "repo": usage.get("repo", ""),
+                    "config_ref": usage.get("config_ref", ""),
+                    "machine": usage.get("machine", ""),
+                    "secret_file": None,
+                }
+                # Find the encrypted secret file
+                for ext in ["pem", "env"]:
+                    sf = SECRETS_DIR / f"{token['id'].replace('github-', '').replace('ssh-', '')}.enc.{ext}"
+                    if sf.exists():
+                        index[ph]["secret_file"] = str(sf)
+                        break
+    return index, m.get("placeholder_prefix", "$TOKEN_")
+
+
+def resolve_placeholder(placeholder, index):
+    """Resolve a single placeholder to its actual value."""
+    if placeholder not in index:
+        return None, f"Unknown placeholder: {placeholder}"
+
+    info = index[placeholder]
+    secret_file = info.get("secret_file")
+
+    if not secret_file or not os.path.exists(secret_file):
+        return None, f"Secret file not found for {placeholder}"
+
+    try:
+        # Decrypt with sops
+        result = subprocess.run(
+            ["sops", "--decrypt", secret_file],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            return None, f"Decryption failed: {result.stderr[:200]}"
+
+        # Extract the value from the decrypted content
+        data = result.stdout.strip()
+        # YAML format: key: base64value
+        # ENV format: KEY=value
+        if ":" in data and not data.startswith("#"):
+            # YAML: extract the value part
+            val = data.split(":", 1)[1].strip()
+            try:
+                val = bytes.fromhex(val).decode() if val.startswith("0x") else val
+            except:
+                pass
+            # Try base64 decode for PEM files
+            try:
+                import base64
+                decoded = base64.b64decode(val)
+                return decoded.decode(), None
+            except:
+                return val, None
+        elif "=" in data:
+            val = data.split("=", 1)[1].strip()
+            return val, None
+        else:
+            return data, None
+
+    except Exception as e:
+        return None, str(e)
+
+
+def resolve_file(path, index, prefix):
+    """Resolve all $TOKEN_* placeholders in a file."""
+    try:
+        with open(path) as f:
+            content = f.read()
+    except FileNotFoundError:
+        print(f"File not found: {path}", file=sys.stderr)
+        sys.exit(1)
+
+    replacements = []
+    for match in PLACEHOLDER_RE.finditer(content):
+        placeholder = f"{prefix}{match.group(1)}"
+        value, error = resolve_placeholder(placeholder, index)
+        if error:
+            print(f"  ⚠️  {placeholder}: {error}", file=sys.stderr)
+            replacements.append((match.group(0), f"#UNRESOLVED({placeholder})"))
+        else:
+            replacements.append((match.group(0), value))
+
+    result = content
+    for old, new in replacements:
+        result = result.replace(old, new)
+
+    return result
+
+
+def main():
+    index, prefix = build_placeholder_index()
+
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+
+    if cmd == "--list":
+        print(f"Available placeholders ({len(index)}):")
+        for ph, info in sorted(index.items()):
+            print(f"  {ph:35s} → {info['token_id']} ({info['function']})")
+
+    elif cmd == "--file":
+        if len(sys.argv) < 3:
+            print("Usage: token-resolve --file <path>", file=sys.stderr)
+            sys.exit(1)
+        resolved = resolve_file(sys.argv[2], index, prefix)
+        print(resolved)
+
+    elif cmd == "--check":
+        if len(sys.argv) < 3:
+            print("Usage: token-resolve --check <path>", file=sys.stderr)
+            sys.exit(1)
+        resolved = resolve_file(sys.argv[2], index, prefix)
+        if "UNRESOLVED" in resolved:
+            print(f"❌ Unresolved placeholders in {sys.argv[2]}")
+            sys.exit(1)
+        print(f"✅ All placeholders resolved in {sys.argv[2]}")
+
+    else:
+        # Single placeholder
+        placeholder = cmd
+        if not placeholder.startswith(prefix):
+            placeholder = f"{prefix}{placeholder}"
+        value, error = resolve_placeholder(placeholder, index)
+        if error:
+            print(f"Error: {error}", file=sys.stderr)
+            sys.exit(1)
+        print(value)
+
+
+if __name__ == "__main__":
+    main()
