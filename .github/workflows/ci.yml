@@ -1,4 +1,4 @@
-# CI — runs lint + tests directly (avoids reusable workflow permission issues)
+# CI — runs lint + tests directly. Check name "ci / ci" to satisfy org ruleset.
 name: ci
 
 on:
@@ -9,7 +9,7 @@ on:
   merge_group:
 
 jobs:
-  ci:
+  ci / ci:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
