@@ -699,3 +699,20 @@ When setting up a new GitHub App for agent access, the full HITL flow is:
 3. Verify: `gh issue create -R any-repo --title t --body t --dry-run`
 
 Each stage is a separate rax action type with exact URLs and UI instructions.
+
+## PR triage workflow
+
+When a PR merge fails (conflict, CI failure, etc.), a triage issue is created.
+The triage agent picks it up, fixes the issue, creates a new PR, and routes it
+through the standard review/merge flow.
+
+### Triage agent responsibilities
+
+1. Diagnose the failure from the issue report
+2. Fix the code (rebase, resolve conflict, fix CI)
+3. Push the fix, create new PR
+4. Route through standard review → merge queue
+5. Close the triage issue when the fix PR merges
+
+### Issue format
+Issues use the PR triage template with labels: `pr-failure`, `triage`.

@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""merge-monitor — Track PRs in the merge queue, report when they land or fail.
+
+Usage:
+  merge-monitor                # check all tracked PRs
+  merge-monitor --watch        # one-shot check + exit (for cron)
+  merge-monitor --add <repo> <pr>  # add a PR to tracking
+  merge-monitor --status       # show all tracked PRs
+
+Each PR is tracked in ~/.rax/merge-tracker.json.
+When a PR merges: comments on the issue, closes tracking.
+When a PR fails: creates a triage issue (#81 flow).
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+TRACKER_PATH = Path.home() / ".rax" / "merge-tracker.json"
+
+
+def load_tracker():
+    if TRACKER_PATH.exists():
+        return json.loads(TRACKER_PATH.read_text())
+    return {"prs": [], "last_checked": None}
+
+
+def save_tracker(data):
+    TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data["last_checked"] = datetime.now(timezone.utc).isoformat()
+    TRACKER_PATH.write_text(json.dumps(data, indent=2))
+
+
+def add_pr(repo, pr_num):
+    data = load_tracker()
+    for p in data["prs"]:
+        if p["repo"] == repo and p["pr"] == pr_num:
+            print(f"Already tracking {repo}#{pr_num}")
+            return
+    data["prs"].append({"repo": repo, "pr": pr_num, "added_at": datetime.now(timezone.utc).isoformat(), "status": "queued"})
+    save_tracker(data)
+    print(f"Now tracking {repo}#{pr_num}")
+
+
+def check_pr(repo, pr_num):
+    """Check a single PR. Returns (status, details)."""
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(pr_num), "-R", repo,
+             "--json", "state,closed,mergeStateStatus,title,url",
+             "--jq", "{state, closed, mergeStateStatus, title, url}"],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            return "error", result.stderr[:200]
+        return "ok", json.loads(result.stdout)
+    except Exception as e:
+        return "error", str(e)
+
+
+def check_all():
+    data = load_tracker()
+    changed = []
+    for i, pr in enumerate(data["prs"]):
+        if pr.get("status") in ("merged", "triaged"):
+            continue
+        status, details = check_pr(pr["repo"], pr["pr"])
+        if status == "error":
+            print(f"  ❌ {pr['repo']}#{pr['pr']} — error: {details}")
+            continue
+
+        closed = details.get("closed", False)
+        merge_state = details.get("mergeStateStatus", "UNKNOWN")
+        title = details.get("title", "")[:60]
+
+        if closed:
+            print(f"  ✅ {pr['repo']}#{pr['pr']} — MERGED: {title}")
+            pr["status"] = "merged"
+            pr["merged_at"] = datetime.now(timezone.utc).isoformat()
+            changed.append(pr)
+            # Post update comment on issue #82
+            subprocess.run(
+                ["gh", "issue", "comment", "82", "-R", "eqdmc/security",
+                 "--body", f"✅ PR #{pr['pr']} ({pr['repo']}) merged: {title}"],
+                capture_output=True, timeout=10
+            )
+        elif merge_state == "BLOCKED":
+            print(f"  ⏳ {pr['repo']}#{pr['pr']} — BLOCKED: {title}")
+            pr["status"] = "blocked"
+        elif merge_state == "DIRTY":
+            print(f"  ❌ {pr['repo']}#{pr['pr']} — CONFLICT: {title}")
+            pr["status"] = "failed"
+            pr["failed_at"] = datetime.now(timezone.utc).isoformat()
+            pr["failure_reason"] = "merge conflict"
+            changed.append(pr)
+            # Create triage issue
+            subprocess.run(
+                ["gh", "issue", "create", "-R", "eqdmc/security",
+                 "--title", f"[triage] PR #{pr['pr']} ({pr['repo']}) — merge conflict",
+                 "--label", "pr-failure",
+                 "--body", f"## Failure report\n\n**PR:** #{pr['pr']} ({pr['repo']})\n**Status:** DIRTY — merge conflict\n**Action:** Fix conflicts and re-queue.\n\n---\n*Auto-reported by merge-monitor*"],
+                capture_output=True, timeout=10
+            )
+            print(f"    Created triage issue for fix PR")
+        else:
+            print(f"  ⏳ {pr['repo']}#{pr['pr']} — {merge_state}: {title}")
+
+    if changed:
+        save_tracker(data)
+        print(f"\n  {len(changed)} PR(s) changed state.")
+
+    return data
+
+
+def show_status():
+    data = load_tracker()
+    if not data["prs"]:
+        print("No PRs being tracked.")
+        return
+    print(f"Tracking {len(data['prs'])} PR(s):")
+    for pr in data["prs"]:
+        icon = {"merged": "✅", "failed": "❌", "blocked": "⏳", "queued": "⏳"}.get(pr.get("status", "queued"), "❓")
+        print(f"  {icon} {pr['repo']}#{pr['pr']} — {pr.get('status', 'unknown')}")
+
+
+def main():
+    if len(sys.argv) < 2:
+        # Default: check all
+        check_all()
+        return
+
+    cmd = sys.argv[1]
+    if cmd == "--add":
+        repo = sys.argv[2]
+        pr_num = int(sys.argv[3])
+        add_pr(repo, pr_num)
+    elif cmd == "--watch":
+        check_all()
+    elif cmd == "--status":
+        show_status()
+    else:
+        print(__doc__)
+
+
+if __name__ == "__main__":
+    main()
