@@ -1,8 +1,8 @@
 {
   "$schema": "https://eqdmc.github.io/schemas/token-manifest-v1.json",
   "version": "1",
-  "updated_at": "2026-06-30T16:00:00Z",
-  "updated_by": "agent (secrets sub-type alignment)",
+  "updated_at": "2026-06-30T16:56:00Z",
+  "updated_by": "agent (merge-bot key installed)",
   "description": "SSOT for all tokens and credentials. Every token has a type, permissions, scope, and usage tracking. Agents query this manifest \u2014 never hardcode token values.",
   "tokens": [
     {
@@ -191,6 +191,37 @@
       "status": "active",
       "notes": "GitHub App for agent API access. Active. Covers all eqdmc repos. Use gh-app-auth to authenticate.",
       "auth_command": "gh-app-auth --client-id Iv23lia83jBPuXt5WMfD --install-id 143517448"
+    },
+    {
+      "id": "github-merge-bot",
+      "type": "github-app",
+      "category": "github",
+      "title": "eqdmc-merge-bot \u2014 PR review and merge queue approval",
+      "placeholder": "$TOKEN_GITHUB_MERGE_BOT",
+      "created_at": "2026-06-30T16:56:00Z",
+      "status": "active",
+      "storage": {
+        "location": "~/.ssh/eqdmc-merge-bot.pem",
+        "format": "RSA private key (PEM, 1679 bytes)",
+        "permissions": "600"
+      },
+      "permissions": {
+        "model": "github-app",
+        "app_id": 4125320,
+        "install_id": 142188577,
+        "pull_requests": "write",
+        "contents": "write",
+        "checks": "write"
+      },
+      "usage": [
+        {
+          "function": "PR review and merge queue approval",
+          "placeholder": "$TOKEN_GITHUB_MERGE_BOT",
+          "config_ref": "~/.ssh/eqdmc-merge-bot.pem",
+          "machine": "asahi"
+        }
+      ],
+      "notes": "Separate app from eqdmc-agent-bots. Can approve PRs that agent-bots created."
     }
   ],
   "token_types": {
