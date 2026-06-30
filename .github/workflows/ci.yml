@@ -8,6 +8,10 @@ on:
     branches: [main]
   merge_group:
 
+permissions:
+  checks: write
+  contents: read
+
 jobs:
   ci-check:
     runs-on: ubuntu-latest
