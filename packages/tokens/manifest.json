@@ -1,8 +1,8 @@
 {
   "$schema": "https://eqdmc.github.io/schemas/token-manifest-v1.json",
   "version": "1",
-  "updated_at": "2026-06-30T12:10:00Z",
-  "updated_by": "agent (app activated)",
+  "updated_at": "2026-06-30T12:15:00Z",
+  "updated_by": "agent (final metadata \u2014 app active)",
   "description": "SSOT for all tokens and credentials. Every token has a type, permissions, scope, and usage tracking. Agents query this manifest \u2014 never hardcode token values.",
   "tokens": [
     {
@@ -161,7 +161,7 @@
       "permissions": {
         "model": "github-app",
         "permission_levels": {
-          "issues": "read",
+          "issues": "write",
           "pull_requests": "write",
           "contents": "write",
           "metadata": "read"
@@ -187,7 +187,8 @@
         "status": "needs-configuration"
       },
       "status": "active",
-      "notes": "GitHub App for agent API access. Active. Auth via gh-app-auth."
+      "notes": "GitHub App for agent API access. Active. Covers all eqdmc repos. Use gh-app-auth to authenticate.",
+      "auth_command": "gh-app-auth --client-id Iv23lia83jBPuXt5WMfD --install-id 143517448"
     }
   ],
   "token_types": {

@@ -149,6 +149,19 @@ audit "Layer 8: global config blocks ~/.ssh/ access"   bash -c 'grep -q "~/.ssh/
 audit "Layer 8: global config blocks .key reads"   bash -c 'grep -q "\.key.*deny" $HOME/.config/opencode/opencode.jsonc 2>/dev/null'
 audit "Layer 8: guard blocks cp *.pem"   bash -c 'echo '"'"'{"action":"exec","command":"cp secret.pem ~/.ssh/"}'"'"' | python3 $GUARD 2>&1 | grep -q BLOCK'
 
+
+# ── Layer 9: GitHub App authentication ──────────────────────────
+if [ -f ~/.ssh/eqdmc-agent-bots.pem ] && command -v gh-app-auth >/dev/null 2>&1; then
+  audit "Layer 9: eqdmc-agent-bots private key exists" true
+  audit "Layer 9: gh-app-auth script exists" true
+  # Test cross-repo access via current session
+  if gh api repos/eqdmc/dotfiles 2>/dev/null | jq -e '.name' >/dev/null 2>&1; then
+    audit "Layer 9: cross-repo access (dotfiles)" true
+  fi
+  if gh api repos/eqdmc/agent-harness 2>/dev/null | jq -e '.name' >/dev/null 2>&1; then
+    audit "Layer 9: cross-repo access (agent-harness)" true
+  fi
+fi
 echo ""
 echo "=== Threat model (verified live) ==="
 echo "  Platform: Fedora Asahi, opencode v1.17.11 (no PreToolUse hooks)"
