@@ -1,8 +1,8 @@
 {
   "$schema": "https://eqdmc.github.io/schemas/token-manifest-v1.json",
   "version": "1",
-  "updated_at": "2026-06-30T12:35:00Z",
-  "updated_by": "agent (corrected URL)",
+  "updated_at": "2026-06-30T16:00:00Z",
+  "updated_by": "agent (secrets sub-type alignment)",
   "description": "SSOT for all tokens and credentials. Every token has a type, permissions, scope, and usage tracking. Agents query this manifest \u2014 never hardcode token values.",
   "tokens": [
     {

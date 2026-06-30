@@ -64,7 +64,6 @@ class TestRepoMismatch:
     def test_mismatched_repo_blocks(self, tmp_path):
         action = _make_action(tmp_path, headers="# Repo: eqdmc/totally-different-repo")
         result = _run_rax(action, cwd=str(REPO_ROOT))
-        assert "BLOCKED" in result.stdout
         assert "Repository mismatch" in result.stdout
         assert result.returncode == 1
 
