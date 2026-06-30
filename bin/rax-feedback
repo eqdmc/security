@@ -33,10 +33,12 @@ AUDIT_FILE = os.path.expanduser("~/.rax/state/audit.jsonl")
 FEEDBACK_FILE = os.path.expanduser("~/.rax/state/feedback.jsonl")
 
 
-def submit_feedback(action_id: str, rating: str, note: str = ""):
+def submit_feedback(action_id: str, rating: str, note: str = "",
+                    satisfaction: str = "", achieved: str = "", improve: str = ""):
     """Submit feedback, creating a GitHub issue."""
-    if rating not in ("good", "slow", "confusing", "broken"):
-        print(f"Invalid rating: {rating} (use: good|slow|confusing|broken)")
+    valid_ratings = ("good", "slow", "confusing", "broken", "neutral", "needs-work", "submitted")
+    if rating not in valid_ratings:
+        print(f"Invalid rating: {rating} (use: {', '.join(valid_ratings)})")
         sys.exit(1)
 
     # Find the action in the audit log to get its type
@@ -54,12 +56,14 @@ def submit_feedback(action_id: str, rating: str, note: str = ""):
                 except json.JSONDecodeError:
                     pass
 
-    # Write to local feedback log
+    # Write to local feedback log (structured format)
     os.makedirs(os.path.dirname(FEEDBACK_FILE), exist_ok=True)
     feedback = {
         "ts": int(datetime.now().timestamp()),
         "action_id": action_id,
-        "rating": rating,
+        "satisfaction": satisfaction or "",
+        "achieved_goal": achieved or "",
+        "improvement": improve or "",
         "note": note[:500],
         "action_type": action_type,
         "purpose": action_purpose,
@@ -67,18 +71,22 @@ def submit_feedback(action_id: str, rating: str, note: str = ""):
     with open(FEEDBACK_FILE, "a") as f:
         f.write(json.dumps(feedback) + "\n")
 
-    # Create GitHub issue
-    title = f"[rax-feedback] {rating}: {action_purpose[:60]}"
+    # Create GitHub issue with structured body
+    sat_display = f"{satisfaction}/5" if satisfaction else "not rated"
+    goal_display = "yes" if achieved and achieved.lower() in ("y", "yes") else "no" if achieved else "not answered"
+    title = f"[rax-feedback] sat={satisfaction or '?'} goal={achieved or '?'}"
     body = (
         f"## rax feedback\n\n"
         f"**Action:** `{action_id}`\n"
-        f"**Rating:** {rating}\n"
-        f"**Type:** {action_type}\n"
-        f"**Purpose:** {action_purpose}\n\n"
-        f"### Note\n{note}\n\n"
-        f"---\n*Submitted via rax-feedback*"
+        f"**Purpose:** {action_purpose}\n"
+        f"**Satisfaction:** {sat_display}\n"
+        f"**Achieved goal:** {goal_display}\n"
+        f"**Improvement:** {improve or 'none'}\n\n"
+        f"---\n*Submitted by rax v0.2.1*"
     )
-    labels = f"agent-work,rax-feedback,rating:{rating}"
+    labels = "agent-work,rax-feedback"
+    if rating and rating not in ("submitted",):
+        labels += f",rating:{rating}"
     if action_type != "generic":
         labels += f",rax-{action_type}"
 
@@ -95,9 +103,10 @@ def submit_feedback(action_id: str, rating: str, note: str = ""):
         print(f"Feedback logged locally (GitHub issue failed: {result.stderr})")
 
     print(f"  Action: {action_id}")
-    print(f"  Rating: {rating}")
-    if note:
-        print(f"  Note: {note}")
+    print(f"  Satisfaction: {sat_display}")
+    print(f"  Achieved goal: {goal_display}")
+    if improve:
+        print(f"  Improvement: {improve}")
 
 
 def list_feedback():
@@ -121,30 +130,54 @@ def show_stats():
         print("No feedback data yet.")
         return
 
-    ratings = {"good": 0, "slow": 0, "confusing": 0, "broken": 0}
-    by_type = {}
+    satisfaction_total = 0
+    satisfaction_count = 0
+    goal_achieved = 0
     total = 0
+    by_type = {}
+    improvements = []
 
     with open(FEEDBACK_FILE) as f:
         for line in f:
             try:
                 fb = json.loads(line)
-                r = fb.get("rating", "unknown")
-                ratings[r] = ratings.get(r, 0) + 1
+                total += 1
                 t = fb.get("action_type", "generic")
                 by_type[t] = by_type.get(t, 0) + 1
-                total += 1
+
+                # Satisfaction score
+                sat = fb.get("satisfaction", "")
+                if sat and sat.isdigit():
+                    s = int(sat)
+                    if 1 <= s <= 5:
+                        satisfaction_total += s
+                        satisfaction_count += 1
+
+                # Goal achieved
+                goal = fb.get("achieved_goal", "")
+                if goal and goal.lower() in ("y", "yes", "true"):
+                    goal_achieved += 1
+
+                # Improvement suggestions
+                imp = fb.get("improvement", "")
+                if imp and imp != "none":
+                    improvements.append(imp)
             except json.JSONDecodeError:
                 pass
 
+    avg_sat = satisfaction_total / satisfaction_count if satisfaction_count else 0
+
     print(f"Total feedback entries: {total}")
-    print(f"\nRatings:")
-    for r, c in sorted(ratings.items()):
-        pct = c / total * 100 if total else 0
-        print(f"  {r:12s}: {c:3d} ({pct:.0f}%)")
+    print(f"\nSatisfaction: {avg_sat:.1f}/5 ({satisfaction_count} ratings)")
+    if total > 0:
+        print(f"Goal achieved: {goal_achieved}/{total} ({goal_achieved * 100 // total}%)")
     print(f"\nBy action type:")
     for t, c in sorted(by_type.items(), key=lambda x: -x[1]):
         print(f"  {t:15s}: {c:3d}")
+    if improvements:
+        print(f"\nImprovement suggestions ({len(improvements)}):")
+        for imp in improvements[:5]:
+            print(f"  - {imp[:100]}")
 
 
 def main():
@@ -163,6 +196,9 @@ def main():
     action_id = None
     rating = None
     note = ""
+    satisfaction = ""
+    achieved = ""
+    improve = ""
 
     for i, arg in enumerate(sys.argv[1:]):
         if arg == "--action" and i + 1 < len(sys.argv) - 1:
@@ -171,12 +207,18 @@ def main():
             rating = sys.argv[i + 2]
         elif arg == "--note" and i + 1 < len(sys.argv) - 1:
             note = sys.argv[i + 2]
+        elif arg == "--satisfaction" and i + 1 < len(sys.argv) - 1:
+            satisfaction = sys.argv[i + 2]
+        elif arg == "--achieved" and i + 1 < len(sys.argv) - 1:
+            achieved = sys.argv[i + 2]
+        elif arg == "--improve" and i + 1 < len(sys.argv) - 1:
+            improve = sys.argv[i + 2]
 
-    if not action_id or not rating:
-        print("Usage: rax-feedback --action <id> --rating good|slow|confusing|broken [--note ...]")
+    if not action_id:
+        print("Usage: rax-feedback --action <id> [--satisfaction 4] [--achieved y] [--improve ...]")
         sys.exit(1)
 
-    submit_feedback(action_id, rating, note)
+    submit_feedback(action_id, rating or "submitted", note, satisfaction, achieved, improve)
 
 
 if __name__ == "__main__":

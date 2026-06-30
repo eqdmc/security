@@ -693,52 +693,69 @@ else
     echo "[RSAX:failed] purpose=\"$PURPOSE\" exit=$status id=$ACTION_ID"
 fi
 
-# ─── FEEDBACK ───
+# ─── FEEDBACK (3 quick questions) ───
 echo ""
-printf "${GREEN}───── FEEDBACK ───────────────────────────────────────────${RESET}\n"
-echo ""
-printf "  How was this rax action?\n"
-echo ""
-printf "  ${DIM}1${RESET}  good       — Worked as expected, smooth process\n"
-printf "  ${DIM}2${RESET}  slow       — Too many steps, took too long\n"
-printf "  ${DIM}3${RESET}  confusing  — Unclear what to do or what happened\n"
-printf "  ${DIM}4${RESET}  broken     — Bug or error in the rax flow\n"
-printf "  ${DIM}5${RESET}  skip       — Don't ask this time\n"
-echo ""
-printf "  Rating [1-5]: "
-read -r _rax_fb_rating
+printf "${GREEN}───── FEEDBACK (3 quick questions) ─────────────────────────${RESET}\n"
 echo ""
 
 _rax_fb_action_id="$ACTION_ID"
 _rax_fb_purpose="${PURPOSE:-unknown}"
-_rax_fb_note=""
+_rax_fb_satisfaction=""
+_rax_fb_achieved=""
+_rax_fb_improve=""
 
-case "$_rax_fb_rating" in
-  1) _rax_fb_label="good" ;;
-  2) _rax_fb_label="slow" ;;
-  3) _rax_fb_label="confusing" ;;
-  4) _rax_fb_label="broken" ;;
-  *) _rax_fb_label="" ;;
-esac
+# Q1: Satisfaction (1-5, single keypress)
+printf "  ${BOLD}Q1${RESET}  How satisfied are you with this rax action? ${DIM}(1-5, 0=skip)${RESET}"
+printf "  ${DIM}1=very dissatisfied  2=dissatisfied  3=neutral  4=satisfied  5=very satisfied${RESET}\n  > "
+read -r _rax_fb_satisfaction
+echo ""
 
-if [ -n "$_rax_fb_label" ]; then
-  printf "  Optional note (press Enter to skip): "
-  read -r _rax_fb_note
-  echo ""
-  # Submit feedback via the rax-feedback tool
+# Q2: Outcome achieved (y/n, single keypress)
+printf "  ${BOLD}Q2${RESET}  Did this rax action achieve what you needed? ${DIM}(y/n)${RESET}\n  > "
+read -r _rax_fb_achieved
+echo ""
+
+# Q3: Improvement (optional text)
+printf "  ${BOLD}Q3${RESET}  What could be improved? ${DIM}(press Enter to skip)${RESET}\n  > "
+read -r _rax_fb_improve
+echo ""
+
+# Submit if at least one question was answered
+if [ -n "$_rax_fb_satisfaction" ] && [ "$_rax_fb_satisfaction" != "0" ] || [ -n "$_rax_fb_achieved" ] || [ -n "$_rax_fb_improve" ]; then
+  # Map satisfaction to a label for the GitHub issue
+  _rax_fb_label=""
+  case "$_rax_fb_satisfaction" in
+    4|5) _rax_fb_label="good" ;;
+    3)   _rax_fb_label="neutral" ;;
+    1|2) _rax_fb_label="needs-work" ;;
+  esac
+
+  # Build structured feedback body
+  _rax_fb_body="## rax feedback
+
+**Action:** \`$_rax_fb_action_id\`
+**Purpose:** $_rax_fb_purpose
+**Satisfaction:** ${_rax_fb_satisfaction:-not-rated}/5
+**Achieved goal:** ${_rax_fb_achieved:-not-answered}
+**Improvement:** ${_rax_fb_improve:-none}
+
+*Submitted by rax v0.2.1*"
+
   if command -v rax-feedback >/dev/null 2>&1; then
-    rax-feedback --action "$_rax_fb_action_id" --rating "$_rax_fb_label" --note "${_rax_fb_note:-}" 2>&1 | sed 's/^/  /'
+    rax-feedback --action "$_rax_fb_action_id" --rating "${_rax_fb_label:-submitted}" --note "sat=$_rax_fb_satisfaction goal=$_rax_fb_achieved improve=$_rax_fb_improve" 2>&1 | sed 's/^/  /'
   else
     _rax_fb_repo="${REPO_HEADER:-eqdmc/security}"
     gh issue create -R "$_rax_fb_repo" \
-      --title "[rax-feedback] $_rax_fb_label: ${_rax_fb_purpose:0:60}" \
-      --label "agent-work,rax-feedback,rating:$_rax_fb_label" \
-      --body "## rax feedback\n\n**Action:** \`$_rax_fb_action_id\`\n**Rating:** $_rax_fb_label\n**Purpose:** $_rax_fb_purpose\n\n**Note:** ${_rax_fb_note:-}\n\n---\n*Auto-submitted by rax*" 2>&1 | sed 's/^/  /'
+      --title "[rax-feedback] sat=$_rax_fb_satisfaction goal=$_rax_fb_achieved" \
+      --label "agent-work,rax-feedback${_rax_fb_label:+,$_rax_fb_label}" \
+      --body "$_rax_fb_body" 2>&1 | sed 's/^/  /'
   fi
   printf "\n  ${GREEN}${CHECK} Feedback submitted — thank you${RESET}\n"
+else
+  printf "  ${DIM}Feedback skipped${RESET}\n"
 fi
 
-unset _rax_fb_rating _rax_fb_label _rax_fb_note _rax_fb_action_id _rax_fb_purpose _rax_fb_repo
+unset _rax_fb_action_id _rax_fb_purpose _rax_fb_satisfaction _rax_fb_achieved _rax_fb_improve _rax_fb_label _rax_fb_body _rax_fb_repo
 
 # ─── NEXT STEPS ───
 echo ""
