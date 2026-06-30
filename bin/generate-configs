@@ -110,6 +110,7 @@ def generate_opencode(policy):
             "../eqdmc/agent-harness/ENVIRONMENT.md",
             "../eqdmc/agent-harness/HARNESS.md",
             "AGENTS.md",
+            ".opencode/instructions/rax-check.md",
         ],
     }
 

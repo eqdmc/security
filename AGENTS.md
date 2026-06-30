@@ -4,26 +4,39 @@ Security-as-code: automated vetting, policy engines, continuous scanning, agent 
 
 ## rax quickstart — read this first
 
-Every action that needs human approval goes through `rax`. This is the only path.
+### 1. Check for results from previous rax actions (DO THIS FIRST EVERY TURN)
 
-**If you need approval for something**, write a staged action:
+At the START of every turn, check if a rax action completed while you were
+waiting. If the result file exists, a human ran `rax` since your last turn:
 
 ```bash
-cat > /tmp/rax-action.sh << 'EOF'
+if [ -f "$RAX_RESULT_FILE" ]; then
+  RESULT=$(cat "$RAX_RESULT_FILE")
+  EXIT=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('exit','?'))")
+  if [ "$EXIT" = "0" ]; then
+    echo "RAX ACTION APPROVED: $(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('purpose',''))")"
+  else
+    echo "RAX ACTION REJECTED/FAILED: $(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('purpose',''))")"
+  fi
+  rm -f "$RAX_RESULT_FILE"
+fi
+```
+
+This is MANDATORY — do not start working until you have checked for and
+processed any pending rax results. The human expects you to know what happened.
+
+### 2. If you need human approval
+
+Write a staged action, then tell the human **"rax action staged — run: rax"**:
+
+```bash
+cat > "$RAX_PENDING_FILE" << 'EOF'
 #!/bin/bash
 # Purpose: <what you need>
 set -euo pipefail
 echo "run the command here"
 EOF
-chmod 600 /tmp/rax-action.sh
-export RAX_PENDING_FILE=/tmp/rax-action.sh
-```
-
-Then tell the human: **"rax action staged — run: rax"**
-
-After they run it, read the result:
-```bash
-cat "$RAX_RESULT_FILE" 2>/dev/null || echo '{"exit":-1}'
+chmod 600 "$RAX_PENDING_FILE"
 ```
 
 rax is auto-deployed on every machine via dotfiles `install.sh`. If it's not
