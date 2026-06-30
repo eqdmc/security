@@ -2,7 +2,7 @@
 # review-request — Request human review for a PR via rax.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PR="${1:-}"; REPO="${REPO:-eqdmc/security}"; SUMMARY=""
 while [ $# -gt 0 ]; do
   case "$1" in --repo) REPO="$2"; shift 2 ;; --summary) SUMMARY="$2"; shift 2 ;; *) PR="$1"; shift ;;
@@ -95,7 +95,7 @@ if [ "$IS_SELF" = true ]; then
   printf '%s\n' "  MERGE_BOT_KEY=\$HOME/.ssh/eqdmc-merge-bot.pem" >> "$RAX_PENDING"
   printf '%s\n' '  if [ -f "$MERGE_BOT_KEY" ]; then' >> "$RAX_PENDING"
   printf '%s\n' "    echo \"  Authenticating as eqdmc-merge-bot...\"" >> "$RAX_PENDING"
-  printf '%s\n' "    $SCRIPT_DIR/bin/gh-merge-bot-auth 2>&1 | sed 's/^/  /'" >> "$RAX_PENDING"
+  printf '%s\n' "    $REPO_DIR/bin/gh-merge-bot-auth 2>&1 | sed 's/^/  /'" >> "$RAX_PENDING"
   printf '%s\n' "    gh pr review $PR -R $REPO --approve 2>&1 | sed 's/^/  /'" >> "$RAX_PENDING"
   printf '%s\n' "    gh pr merge $PR -R $REPO --auto --squash 2>&1 | sed 's/^/  /'" >> "$RAX_PENDING"
   printf '%s\n' '    printf "\n\033[0;32m✔\033[0m  PR approved by merge-bot and queued.\n"' >> "$RAX_PENDING"
