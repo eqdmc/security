@@ -1,5 +1,3 @@
-# Managed by eqdmc/.github — calls org reusable CI.
-# Produces check name "ci / ci" to satisfy org ruleset main-protection.
 name: ci
 
 on:
@@ -11,5 +9,4 @@ on:
 
 jobs:
   ci:
-    uses: eqdmc/.github/.github/workflows/ci.yml@fc51fa3ceba543032cbd16547cb849dafc8eb5f8 # v0.2.1
-    secrets: inherit
+    uses: ./.github/workflows/ci-reusable.yml
