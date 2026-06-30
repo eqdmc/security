@@ -11,7 +11,7 @@ Use only when the merge queue is stuck and all checks pass.
 ## Procedure
 
 1. **Disable the merge queue ruleset**
-   - Go to: `/organizations/{org}/settings/repos/{repo}/rules`
+   - Go to: `/organizations/{org}/settings/rules`
    - Find `merge-queue` ruleset → Set enforcement to `Disabled`
    
 2. **Merge the PR**
