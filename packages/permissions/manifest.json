@@ -113,6 +113,47 @@
       "gpg_keys": "GPG keys",
       "profile": "Profile information (read-only)",
       "ssh_signing_keys": "SSH signing keys"
+    },
+    "enterprise": {
+      "enterprise_administration": "Enterprise administration — rename, upgrade, manage orgs (write)",
+      "enterprise_audit_log": "Enterprise audit log — streaming audit events (read)",
+      "enterprise_billing": "Enterprise billing — billing settings for actions, packages (read)",
+      "enterprise_code_security": "Enterprise code security — code security configurations and enforcement (write)",
+      "enterprise_copilot": "Enterprise Copilot — Copilot business settings and seat management (write)",
+      "enterprise_dependabot": "Enterprise Dependabot — Dependabot alerts and auto-triage across orgs (write)",
+      "enterprise_domains": "Enterprise domains — verified domains, email notifications (write)",
+      "enterprise_hooks": "Enterprise webhooks — webhook configuration at enterprise level (write)",
+      "enterprise_ip_allow_list": "Enterprise IP allow list — network restrictions across orgs (write)",
+      "enterprise_members": "Enterprise members — manage members across all orgs (write)",
+      "enterprise_oidc": "Enterprise OIDC — OpenID Connect identity provider configuration (write)",
+      "enterprise_orgs": "Enterprise organizations — create, rename, manage orgs (write)",
+      "enterprise_pat_policies": "Enterprise PAT policies — control fine-grained PAT access across orgs (write)",
+      "enterprise_properties": "Enterprise custom properties — custom metadata for repos (write)",
+      "enterprise_runners": "Enterprise self-hosted runners — manage runner groups across orgs (write)",
+      "enterprise_saml": "Enterprise SAML SSO — SAML single sign-on configuration (write)",
+      "enterprise_scim": "Enterprise SCIM — SCIM provisioning for user management (write)",
+      "enterprise_secret_scanning": "Enterprise secret scanning — org-wide secret scanning policies (write)",
+      "enterprise_security_manager": "Enterprise security managers — assigns security manager role in orgs (write)",
+      "enterprise_settings": "Enterprise settings — general enterprise settings (write)"
+    }
+  },
+  "plan_levels": {
+    "current": "free",
+    "available_upgrades": {
+      "team": {
+        "description": "GitHub Team — advanced collaboration",
+        "features": ["Required PR reviewers", "Multiple reviewers", "Draft PRs", "Team discussions", "90-day audit log"],
+        "url": "https://github.com/organizations/eqdmc/settings/billing"
+      },
+      "enterprise": {
+        "description": "GitHub Enterprise — org-wide policies and security",
+        "features": ["SAML/SSO", "Enterprise managed users", "Audit log streaming",
+                     "Enterprise policies", "IP allow lists", "Secret scanning at scale",
+                     "Custom repository roles", "Code security configurations",
+                     "400-day audit log", "SCIM provisioning"],
+        "enterprise_permissions": 20,
+        "url": "https://github.com/enterprise"
+      }
     }
   }
 }
