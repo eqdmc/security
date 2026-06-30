@@ -37,7 +37,7 @@ RAX_SECURITY_REPO="${RAX_SECURITY_REPO:-$HOME/dev/eqdmc/security}"
 # ── Type configurations ──────────────────────────────────────────
 # Each type defines: file extension, sops input format, metadata schema
 declare -A SECRET_TYPE_CONFIG
-SECRET_TYPE_CONFIG[github-app]="pem|yaml|GitHub App private key"
+SECRET_TYPE_CONFIG[github-app]="yaml|yaml|GitHub App private key"
 SECRET_TYPE_CONFIG[pat]="env|yaml|Personal access token"
 SECRET_TYPE_CONFIG[api-key]="env|env|Third-party API key"
 SECRET_TYPE_CONFIG[ssh-key]="pem|yaml|SSH private key"
