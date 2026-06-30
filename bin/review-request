@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# review-request — Request human review for a PR via rax.
+set -euo pipefail
+
+PR="${1:-}"; REPO="${REPO:-eqdmc/security}"; SUMMARY=""
+while [ $# -gt 0 ]; do
+  case "$1" in --repo) REPO="$2"; shift 2 ;; --summary) SUMMARY="$2"; shift 2 ;; *) PR="$1"; shift ;;
+  esac
+done
+[ -z "$PR" ] && { echo "Usage: review-request <pr-number> [--repo]"; exit 1; }
+
+# Gather PR data
+TITLE=$(gh pr view "$PR" -R "$REPO" --json title --jq '.title' 2>/dev/null)
+AUTHOR=$(gh pr view "$PR" -R "$REPO" --json author --jq '.author.login' 2>/dev/null)
+FILES=$(gh pr view "$PR" -R "$REPO" --json files --jq '[.files[]?.path] | join(", ")' 2>/dev/null)
+ADD=$(gh pr view "$PR" -R "$REPO" --json additions --jq '.additions' 2>/dev/null)
+DEL=$(gh pr view "$PR" -R "$REPO" --json deletions --jq '.deletions' 2>/dev/null)
+CI_PASS=$(gh pr view "$PR" -R "$REPO" --json statusCheckRollup --jq '([.statusCheckRollup[]? | select(.conclusion == "FAILURE")] | length == 0)' 2>/dev/null || echo "?")
+MERGEABLE=$(gh pr view "$PR" -R "$REPO" --json mergeable --jq '.mergeable' 2>/dev/null || echo "?")
+
+# Build rax action by writing each section
+RAX_PENDING="${RAX_PENDING_FILE:-$HOME/.rax/pending.sh}"
+mkdir -p "$(dirname "$RAX_PENDING")"
+
+ACTION_ID="rax-review-$PR-$(date +%s)"
+
+cat > "$RAX_PENDING" << ACTIONEOF
+#!/bin/bash
+# Purpose: Review PR #$PR ($REPO)
+# Description: $SUMMARY
+# Issue: $PR
+# Action-ID: $ACTION_ID
+# Repo: $REPO
+set -euo pipefail
+ACTIONEOF
+
+# Write the body (with dynamic PR data embedded)
+cat >> "$RAX_PENDING" << BODYEOF
+
+echo ""
+echo "================================================================"
+echo "  REVIEW REQUEST: $REPO #$PR"
+echo "================================================================"
+echo ""
+echo "  Title:    $TITLE"
+echo "  Author:   $AUTHOR"
+echo "  Files:    $FILES"
+echo "  Changes:  +$ADD/-$DEL"
+echo ""
+echo "  ───── BINARY CHECKLIST ─────"
+echo ""
+echo "  CI passing?     $CI_PASS"
+echo "  No conflicts?   $MERGEABLE"
+echo ""
+echo "  ───── ACTIONS ─────"
+echo ""
+echo "  View PR:  gh pr view $PR -R $REPO"
+echo "  View diff: gh pr diff $PR -R $REPO | less"
+echo ""
+read -p "  Approve this PR? (y/n) " -r ANS
+echo ""
+
+if [ "\$ANS" = "y" ]; then
+  echo "  Approving PR #$PR..."
+  gh pr review $PR -R $REPO --approve 2>&1 | sed 's/^/  /'
+  echo "  Queuing merge..."
+  gh pr merge $PR -R $REPO --auto --squash 2>&1 | sed 's/^/  /'
+  echo ""
+  echo "  ✅ PR #$PR approved and queued."
+else
+  echo ""
+  echo "  ❌ PR #$PR not approved."
+fi
+BODYEOF
+
+chmod 600 "$RAX_PENDING"
+echo "✅ Review request staged: rax"
