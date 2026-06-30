@@ -9,69 +9,97 @@ while [ $# -gt 0 ]; do
 done
 [ -z "$PR" ] && { echo "Usage: review-request <pr-number> [--repo]"; exit 1; }
 
-# Gather PR data
 TITLE=$(gh pr view "$PR" -R "$REPO" --json title --jq '.title' 2>/dev/null)
 AUTHOR=$(gh pr view "$PR" -R "$REPO" --json author --jq '.author.login' 2>/dev/null)
-FILES=$(gh pr view "$PR" -R "$REPO" --json files --jq '[.files[]?.path] | join(", ")' 2>/dev/null)
 ADD=$(gh pr view "$PR" -R "$REPO" --json additions --jq '.additions' 2>/dev/null)
 DEL=$(gh pr view "$PR" -R "$REPO" --json deletions --jq '.deletions' 2>/dev/null)
-CI_PASS=$(gh pr view "$PR" -R "$REPO" --json statusCheckRollup --jq '([.statusCheckRollup[]? | select(.conclusion == "FAILURE")] | length == 0)' 2>/dev/null || echo "?")
-MERGEABLE=$(gh pr view "$PR" -R "$REPO" --json mergeable --jq '.mergeable' 2>/dev/null || echo "?")
 
-# Build rax action by writing each section
+IS_SELF=false; [ "$AUTHOR" = "app/eqdmc-agent-bots" ] && IS_SELF=true
+
 RAX_PENDING="${RAX_PENDING_FILE:-$HOME/.rax/pending.sh}"
 mkdir -p "$(dirname "$RAX_PENDING")"
-
 ACTION_ID="rax-review-$PR-$(date +%s)"
 
-cat > "$RAX_PENDING" << ACTIONEOF
-#!/bin/bash
-# Purpose: Review PR #$PR ($REPO)
-# Description: $SUMMARY
-# Issue: $PR
-# Action-ID: $ACTION_ID
-# Repo: $REPO
-set -euo pipefail
-ACTIONEOF
+# Write rax action — all sections via printf/echo appends, no heredocs
+rm -f "$RAX_PENDING"
 
-# Write the body (with dynamic PR data embedded)
-cat >> "$RAX_PENDING" << BODYEOF
+# Header
+printf '%s\n' "#!/bin/bash" > "$RAX_PENDING"
+printf '%s\n' "# Purpose: Review PR #$PR ($REPO)" >> "$RAX_PENDING"
+printf '%s\n' "# Description: $SUMMARY" >> "$RAX_PENDING"
+printf '%s\n' "# Issue: $PR" >> "$RAX_PENDING"
+printf '%s\n' "# Action-ID: $ACTION_ID" >> "$RAX_PENDING"
+printf '%s\n' "# Repo: $REPO" >> "$RAX_PENDING"
+printf '%s\n' 'set -euo pipefail' >> "$RAX_PENDING"
+printf '%s\n' '' >> "$RAX_PENDING"
 
-echo ""
-echo "================================================================"
-echo "  REVIEW REQUEST: $REPO #$PR"
-echo "================================================================"
-echo ""
-echo "  Title:    $TITLE"
-echo "  Author:   $AUTHOR"
-echo "  Files:    $FILES"
-echo "  Changes:  +$ADD/-$DEL"
-echo ""
-echo "  ───── BINARY CHECKLIST ─────"
-echo ""
-echo "  CI passing?     $CI_PASS"
-echo "  No conflicts?   $MERGEABLE"
-echo ""
-echo "  ───── ACTIONS ─────"
-echo ""
-echo "  View PR:  gh pr view $PR -R $REPO"
-echo "  View diff: gh pr diff $PR -R $REPO | less"
-echo ""
-read -p "  Approve this PR? (y/n) " -r ANS
-echo ""
+# Title section
+printf '%s\n' 'printf "\n\033[1;35m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n"' >> "$RAX_PENDING"
+printf '%s\n' 'printf "\033[1;35m  REVIEW REQUEST\033[0m\n"' >> "$RAX_PENDING"
+printf '%s\n' 'printf "\033[1;35m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n"' >> "$RAX_PENDING"
+printf '%s\n' 'echo ""' >> "$RAX_PENDING"
 
-if [ "\$ANS" = "y" ]; then
-  echo "  Approving PR #$PR..."
-  gh pr review $PR -R $REPO --approve 2>&1 | sed 's/^/  /'
-  echo "  Queuing merge..."
-  gh pr merge $PR -R $REPO --auto --squash 2>&1 | sed 's/^/  /'
-  echo ""
-  echo "  ✅ PR #$PR approved and queued."
+# PR info
+printf '%s\n' "echo \"  Title:    $TITLE\"" >> "$RAX_PENDING"
+printf '%s\n' "echo \"  Author:   $AUTHOR\"" >> "$RAX_PENDING"
+printf '%s\n' "echo \"  Changes:  +$ADD/-$DEL\"" >> "$RAX_PENDING"
+printf '%s\n' 'echo ""' >> "$RAX_PENDING"
+
+# Binary checklist
+printf '%s\n' 'printf "\033[1;36m───── BINARY CHECKLIST ────────────────────────────────\033[0m\n"' >> "$RAX_PENDING"
+printf '%s\n' 'echo ""' >> "$RAX_PENDING"
+
+# CI check
+CI_OUT=$(gh pr view "$PR" -R "$REPO" --json statusCheckRollup --jq '([.statusCheckRollup[]? | select(.conclusion == "FAILURE")] | length == 0)' 2>/dev/null || echo "?")
+if [ "$CI_OUT" = "true" ]; then
+  printf '%s\n' 'printf "\033[0;32m✔\033[0m  CI passing\n"' >> "$RAX_PENDING"
 else
-  echo ""
-  echo "  ❌ PR #$PR not approved."
+  printf '%s\n' 'printf "\033[0;31m✘\033[0m  CI passing (unable to check)\n"' >> "$RAX_PENDING"
 fi
-BODYEOF
+
+# Mergeable check
+MERGE_OUT=$(gh pr view "$PR" -R "$REPO" --json mergeable --jq '.mergeable' 2>/dev/null || echo "?")
+if [ "$MERGE_OUT" = "MERGEABLE" ]; then
+  printf '%s\n' 'printf "\033[0;32m✔\033[0m  No conflicts\n"' >> "$RAX_PENDING"
+else
+  printf '%s\n' 'printf "\033[0;31m✘\033[0m  No conflicts\n"' >> "$RAX_PENDING"
+fi
+
+printf '%s\n' 'echo ""' >> "$RAX_PENDING"
+printf '%s\n' 'printf "\033[1;33m───── ACTIONS ─────────────────────────────────────────\033[0m\n"' >> "$RAX_PENDING"
+printf '%s\n' 'echo ""' >> "$RAX_PENDING"
+printf '%s\n' "echo \"  View PR:  gh pr view $PR -R $REPO\"" >> "$RAX_PENDING"
+printf '%s\n' 'echo ""' >> "$RAX_PENDING"
+
+# Self-approve warning
+if [ "$IS_SELF" = true ]; then
+  printf '%s\n' 'printf "\033[1;33m⚠  This PR was created by eqdmc-agent-bots.\033[0m\n"' >> "$RAX_PENDING"
+  printf '%s\n' 'printf "\033[1;33m   The app cannot approve its own PR. To approve:\033[0m\n"' >> "$RAX_PENDING"
+  printf '%s\n' 'echo ""' >> "$RAX_PENDING"
+  printf '%s\n' "echo \"  1. Visit: https://github.com/$REPO/pull/$PR\"" >> "$RAX_PENDING"
+  printf '%s\n' "echo \"  2. Click 'Files changed' → 'Review changes'\"" >> "$RAX_PENDING"
+  printf '%s\n' "echo \"  3. Select 'Approve' → 'Submit review'\"" >> "$RAX_PENDING"
+  printf '%s\n' "echo \"  4. Return here and type 'y' to queue\"" >> "$RAX_PENDING"
+  printf '%s\n' 'echo ""' >> "$RAX_PENDING"
+fi
+
+# Approve/reject prompt
+printf '%s\n' 'read -p "  Approve this PR? (y/n) " -r ANS' >> "$RAX_PENDING"
+printf '%s\n' 'echo ""' >> "$RAX_PENDING"
+printf '%s\n' 'if [ "$ANS" = "y" ]; then' >> "$RAX_PENDING"
+
+if [ "$IS_SELF" = true ]; then
+  printf '%s\n' "  gh pr merge $PR -R $REPO --auto --squash 2>&1 | sed 's/^/  /'" >> "$RAX_PENDING"
+  printf '%s\n' '  printf "\n\033[0;32m✔\033[0m  PR queued.\n"' >> "$RAX_PENDING"
+else
+  printf '%s\n' "  gh pr review $PR -R $REPO --approve 2>&1 | sed 's/^/  /'" >> "$RAX_PENDING"
+  printf '%s\n' "  gh pr merge $PR -R $REPO --auto --squash 2>&1 | sed 's/^/  /'" >> "$RAX_PENDING"
+  printf '%s\n' '  printf "\n\033[0;32m✔\033[0m  PR approved and queued.\n"' >> "$RAX_PENDING"
+fi
+
+printf '%s\n' 'else' >> "$RAX_PENDING"
+printf '%s\n' '  printf "\033[0;31m✘\033[0m  PR not approved.\n"' >> "$RAX_PENDING"
+printf '%s\n' 'fi' >> "$RAX_PENDING"
 
 chmod 600 "$RAX_PENDING"
 echo "✅ Review request staged: rax"
