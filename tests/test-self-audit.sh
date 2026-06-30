@@ -147,7 +147,7 @@ fi
 audit "Layer 8: global config blocks .pem reads"   bash -c 'grep -q "\.pem.*deny" $HOME/.config/opencode/opencode.jsonc 2>/dev/null'
 audit "Layer 8: global config blocks ~/.ssh/ access"   bash -c 'grep -q "~/.ssh/.*deny" $HOME/.config/opencode/opencode.jsonc 2>/dev/null'
 audit "Layer 8: global config blocks .key reads"   bash -c 'grep -q "\.key.*deny" $HOME/.config/opencode/opencode.jsonc 2>/dev/null'
-audit "Layer 8: guard blocks cp *.pem"   bash -c 'echo '"'"'{"action":"exec","command":"cp secret.pem ~/.ssh/"}'"'"' | python3 $GUARD 2>&1 | grep -q BLOCK'
+audit "Layer 8: guard blocks cp *.pem"   bash -c 'echo '"'"'{"action":"exec","command":"cp foo.pem ~/.ssh/"}'"'"' | python3 "$1" 2>&1 | grep -q BLOCK' -- "$GUARD"
 
 
 # ── Layer 9: GitHub App authentication ──────────────────────────
