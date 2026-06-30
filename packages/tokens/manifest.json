@@ -1,8 +1,8 @@
 {
   "$schema": "https://eqdmc.github.io/schemas/token-manifest-v1.json",
   "version": "1",
-  "updated_at": "2026-06-30T10:30:00Z",
-  "updated_by": "agent (post-hardening audit)",
+  "updated_at": "2026-06-30T11:30:00Z",
+  "updated_by": "agent (cleanup \u2014 reverting premature key assumptions)",
   "description": "SSOT for all tokens and credentials. Every token has a type, permissions, scope, and usage tracking. Agents query this manifest \u2014 never hardcode token values.",
   "tokens": [
     {
@@ -143,6 +143,50 @@
       },
       "status": "active",
       "notes": "Authentication key. Not used for signing (separate key for that)."
+    },
+    {
+      "id": "gh-app-eqdmc-agent-bots",
+      "type": "github-app",
+      "category": "github",
+      "title": "eqdmc-agent-bots \u2014 GitHub App for agent API access",
+      "created_at": "2026-06-30T00:00:00Z",
+      "expires_at": null,
+      "last_rotated": "2026-06-30T00:00:00Z",
+      "storage": {
+        "location": "to-be-placed: ~/.ssh/eqdmc-agent-bots.pem (human will place)",
+        "format": "RSA private key (PEM, 1679 bytes)",
+        "encrypted": false,
+        "permissions": "600"
+      },
+      "permissions": {
+        "model": "github-app",
+        "permission_levels": {
+          "issues": "read",
+          "pull_requests": "write",
+          "contents": "write",
+          "metadata": "read"
+        },
+        "app_id": null,
+        "install_id": null,
+        "note": "Run gh-app-auth --app-id <ID> --install-id <ID> to configure"
+      },
+      "usage": [
+        {
+          "function": "GitHub API access for agents \u2014 issues, PRs, contents across all repos",
+          "repo": "all eqdmc repos",
+          "config_ref": "gh-app-auth (CLI) or GH_TOKEN env var",
+          "placeholder": "$GH_APP_TOKEN",
+          "machine": "asahi"
+        }
+      ],
+      "audit": {
+        "created_by": "human (via rax action)",
+        "creation_url": "https://github.com/settings/apps/eqdmc-agent-bots",
+        "replaces": "gh-eqdmc-admin PAT for cross-repo access",
+        "status": "needs-configuration"
+      },
+      "status": "needs-configuration",
+      "notes": "GitHub App for agent API access. Key will be placed by human. Run rax to provide IDs."
     }
   ],
   "token_types": {

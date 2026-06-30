@@ -143,6 +143,12 @@ if [ -f "$TOKEN_MANIFEST" ]; then
     bash -c 'jq -e ".tokens | map(.usage) | all(length > 0)" "$1"' -- "$TOKEN_MANIFEST"
 fi
 
+# ── Layer 8: Credential protection ────────────────────────────────
+audit "Layer 8: global config blocks .pem reads"   bash -c 'grep -q "\.pem.*deny" $HOME/.config/opencode/opencode.jsonc 2>/dev/null'
+audit "Layer 8: global config blocks ~/.ssh/ access"   bash -c 'grep -q "~/.ssh/.*deny" $HOME/.config/opencode/opencode.jsonc 2>/dev/null'
+audit "Layer 8: global config blocks .key reads"   bash -c 'grep -q "\.key.*deny" $HOME/.config/opencode/opencode.jsonc 2>/dev/null'
+audit "Layer 8: guard blocks cp *.pem"   bash -c 'echo '"'"'{"action":"exec","command":"cp secret.pem ~/.ssh/"}'"'"' | python3 $GUARD 2>&1 | grep -q BLOCK'
+
 echo ""
 echo "=== Threat model (verified live) ==="
 echo "  Platform: Fedora Asahi, opencode v1.17.11 (no PreToolUse hooks)"

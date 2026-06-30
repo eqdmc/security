@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# gh-app-auth — Authenticate as a GitHub App installation.
+#
+# Usage:
+#   gh-app-auth [--app-id <id>] [--install-id <id>] [--key ~/.ssh/eqdmc-agent-bots.pem]
+#   gh-app-auth [--app-id <id>] [--install-id <id>] --env  # print export lines
+#
+# Generates a JWT from the app's private key, exchanges it for a 1-hour
+# installation access token, and configures gh CLI to use it.
+#
+# Requires: openssl, curl, jq
+set -euo pipefail
+
+APP_ID="${GH_APP_ID:-}"
+INSTALL_ID="${GH_APP_INSTALL_ID:-}"
+KEY_FILE="${GH_APP_KEY:-$HOME/.ssh/eqdmc-agent-bots.pem}"
+OUTPUT_MODE="direct"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --app-id) APP_ID="$2"; shift 2 ;;
+    --install-id|--install) INSTALL_ID="$2"; shift 2 ;;
+    --key) KEY_FILE="$2"; shift 2 ;;
+    --env) OUTPUT_MODE="env"; shift ;;
+    --help|-h)
+      echo "Usage: gh-app-auth [--app-id ID] [--install-id ID] [--key PATH]"
+      echo ""
+      echo "Authenticates as a GitHub App installation and configures gh CLI."
+      echo "Environment variables:"
+      echo "  GH_APP_ID       — GitHub App ID (find in app settings)"
+      echo "  GH_APP_INSTALL_ID — Installation ID (find in install URL)"
+      echo "  GH_APP_KEY       — Path to app private key (.pem)"
+      exit 0 ;;
+    *) echo "Unknown: $1"; exit 1 ;;
+  esac
+done
+
+if [ ! -f "$KEY_FILE" ]; then
+  echo "ERROR: Private key not found at $KEY_FILE"
+  echo "Set GH_APP_KEY to the correct path, or download the key from:"
+  echo "  https://github.com/settings/apps/eqdmc-agent-bots"
+  exit 1
+fi
+
+if [ -z "$APP_ID" ]; then
+  echo "ERROR: APP_ID required. Set GH_APP_ID or pass --app-id."
+  echo "Find it at: https://github.com/settings/apps/eqdmc-agent-bots"
+  exit 1
+fi
+
+if [ -z "$INSTALL_ID" ]; then
+  echo "ERROR: INSTALL_ID required. Set GH_APP_INSTALL_ID or pass --install-id."
+  echo "Find it in the install URL after installing the app on your org."
+  exit 1
+fi
+
+# Generate JWT
+# Header: {"alg":"RS256","typ":"JWT"}
+# Payload: {"iat":<now>,"exp":<now+600>,"iss":<app_id>}
+NOW=$(date +%s)
+EXP=$((NOW + 600))
+
+HEADER=$(echo -n '{"alg":"RS256","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+PAYLOAD=$(echo -n "{\"iat\":$NOW,\"exp\":$EXP,\"iss\":$APP_ID}" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+SIGNATURE=$(echo -n "$HEADER.$PAYLOAD" | openssl dgst -sha256 -sign "$KEY_FILE" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+
+JWT="$HEADER.$PAYLOAD.$SIGNATURE"
+
+# Exchange JWT for installation access token
+TOKEN=$(curl -s -X POST \
+  -H "Authorization: Bearer $JWT" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/app/installations/$INSTALL_ID/access_tokens" \
+  | jq -r '.token // empty')
+
+if [ -z "$TOKEN" ]; then
+  echo "ERROR: Failed to get installation token. Check APP_ID and INSTALL_ID."
+  exit 1
+fi
+
+case "$OUTPUT_MODE" in
+  env)
+    echo "export GH_TOKEN=$TOKEN"
+    echo "# Use: eval \$(gh-app-auth --env --app-id $APP_ID --install-id $INSTALL_ID)"
+    ;;
+  direct)
+    # Configure gh CLI to use this token
+    echo "$TOKEN" | gh auth login -p https -h github.com --with-token 2>/dev/null
+    echo "Authenticated as eqdmc-agent-bots installation"
+    echo "Token expires in 1 hour. Re-run gh-app-auth to refresh."
+    ;;
+esac
