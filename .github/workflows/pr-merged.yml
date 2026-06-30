@@ -11,9 +11,9 @@ permissions:
 
 jobs:
   outcome:
-    uses: eqdmc/.github/.github/workflows/outcome-comment.yml@724554ebf56d61de2b80d4a058cbed2a91b68a76 # v0.2.1
+    uses: eqdmc/.github/.github/workflows/outcome-comment.yml@fc51fa3ceba543032cbd16547cb849dafc8eb5f8 # v0.2.1
     secrets: inherit
 
   update-queued:
-    uses: eqdmc/.github/.github/workflows/auto-update-branch.yml@724554ebf56d61de2b80d4a058cbed2a91b68a76 # v0.2.1
+    uses: eqdmc/.github/.github/workflows/auto-update-branch.yml@fc51fa3ceba543032cbd16547cb849dafc8eb5f8 # v0.2.1
     secrets: inherit
