@@ -132,18 +132,25 @@ YAML
     unset secret_value
   fi
 
-  # Step 3: Encrypt with sops
+  # Step 3: Encrypt with sops — pass age recipients directly (avoids path_regex issues)
   echo "  [3/6] Encrypting with sops/age..."
   mkdir -p "$RAX_SECRETS_DIR"
+  # Read age recipients from .sops.yaml
+  local age_keys=$(grep -A5 "age:" "$(dirname "$RAX_SECRETS_DIR")/.sops.yaml" 2>/dev/null | grep "age1" | tr -d ' ,')
+  if [ -z "$age_keys" ]; then
+    # Fallback: known eqdmc recipients
+    age_keys="age1yubikey1qfkf3m8jqkq4fkrjd374svdg40eqlfw9yun9wl82xepg4c3l8affgfy9thu,age1yubikey1qtvay8rvs4ka3qwqm4xep2uds6j5xspgpk2ag04369axd52drjugx78w479"
+  fi
   sops --encrypt --input-type "$input_fmt" --output-type "$input_fmt" \
-    "$tmp_input" > "$output_file" 2>&1
+    --age "$age_keys" "$tmp_input" > "$output_file" 2>&1
   chmod 600 "$output_file"
   rm -f "$tmp_input"
   echo "    ✅ Encrypted → ${output_file}"
 
   # Step 4: Verify decryption
   echo "  [4/6] Verifying decryption..."
-  if sops --decrypt "$output_file" >/dev/null 2>&1; then
+  if sops --decrypt --input-type "$input_fmt" --output-type "$input_fmt" \
+    "$output_file" >/dev/null 2>&1; then
     echo "    ✅ Decryption verified"
   else
     echo "    ❌ Decryption failed"
