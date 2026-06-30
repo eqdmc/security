@@ -1,0 +1,128 @@
+# rax policy — danger patterns and thresholds for HITL approval.
+# Single source of truth deployed to ~/.rax/policy.yml on all machines.
+# Git-tracked in eqdmc/security; deploy via bin/rax-deploy or dotfiles install.
+#
+# Schema:
+#   high_risk_threshold: int — danger score above this requires "yes" not "y"
+#   protected_patterns: [str] — regex patterns for paths rax refuses to edit
+#   findings: [{pattern, points, level, message, detail}] — risk scoring rules
+
+high_risk_threshold: 30
+
+protected_patterns:
+  - '>\s*~/\.(claude|opencode)/(settings\.json|rules/|skills/|agents/|commands/)'
+  - 'config-unlock'
+  - '>\s*~/\.rax/policy\.yml'
+
+findings:
+  # ── Critical (30 pts) ────────────────────────────────────────────
+  - pattern: '\brm\s+-(rf|fr)\s+/'
+    points: 30
+    level: critical
+    message: "rm -rf on root path"
+    detail: "Deletes files recursively — verify the exact path"
+
+  - pattern: '\bsudo\s'
+    points: 30
+    level: critical
+    message: "uses sudo"
+    detail: "Elevated privileges — is this genuinely necessary?"
+
+  - pattern: 'curl.*\|\s*(ba)?sh|wget.*\|\s*(ba)?sh'
+    points: 30
+    level: critical
+    message: "pipes URL to shell"
+    detail: "Remote code execution — verify the URL is trusted"
+
+  - pattern: '\beval\s'
+    points: 30
+    level: critical
+    message: "uses eval"
+    detail: "Arbitrary code execution — verify the evaluated string"
+
+  # ── High (20 pts) ────────────────────────────────────────────────
+  - pattern: '\bgh\s+api\s+.*DELETE|gh\s+api\s+.*--method\s+DELETE'
+    points: 25
+    level: critical
+    message: "GitHub API DELETE"
+    detail: "Destructive API call — verify the endpoint and resource"
+
+  - pattern: 'git\s+push\s+--force'
+    points: 20
+    level: high
+    message: "git force push"
+    detail: "Overwrites remote history — cannot be undone"
+
+  - pattern: 'git\s+reset\s+--hard'
+    points: 20
+    level: high
+    message: "git hard reset"
+    detail: "Discards uncommitted changes permanently"
+
+  - pattern: 'chmod\s+777'
+    points: 20
+    level: high
+    message: "chmod 777"
+    detail: "World-writable — security risk"
+
+  - pattern: '>\s*~/\.(ssh|gnupg)'
+    points: 20
+    level: high
+    message: "writes to sensitive dotfile"
+    detail: "Modifies security-critical config (SSH keys, GPG)"
+
+  - pattern: '>\s*~/\.zshrc|>\s*~/\.zprofile|>\s*~/\.bashrc'
+    points: 15
+    level: high
+    message: "modifies shell config"
+    detail: "Changes apply to all future shell sessions"
+
+  # ── Medium (10 pts) ──────────────────────────────────────────────
+  - pattern: '(?i)(password|secret|token|api[._-]?key)'
+    points: 10
+    level: medium
+    message: "handles credentials"
+    detail: "Verify secrets stored securely (0600 perms)"
+
+  - pattern: '\bbrew\s+install|pip3?\s+install|npm\s+install\s+-g|flatpak\s+install|dnf\s+install|apt\s+install|cargo\s+install|gem\s+install'
+    points: 10
+    level: medium
+    message: "installs packages"
+    detail: "New dependency — should go through vet-install"
+
+  - pattern: '\bgh\s+secret\s+set|gh\s+variable\s+set'
+    points: 10
+    level: medium
+    message: "sets GitHub secret or variable"
+    detail: "Verify the value is scoped to the correct repo/environment"
+
+  - pattern: 'gh\s+issue\s+create'
+    points: 5
+    level: medium
+    message: "creates GitHub issue"
+    detail: "Verify the issue title and content are correct"
+
+  # ── Low (5 pts) ──────────────────────────────────────────────────
+  - pattern: '\b(chmod|chown)\s'
+    points: 5
+    level: medium
+    message: "changes permissions"
+    detail: "Verify target path and mode"
+
+  - pattern: '\b(launchctl|systemctl)\s+(load|unload|start|stop|enable|disable)'
+    points: 5
+    level: medium
+    message: "modifies system service"
+    detail: "Service change persists across reboots"
+
+  - pattern: '\b(curl|wget)\s'
+    points: 5
+    level: low
+    message: "network requests"
+    detail: "Verify target domain is trusted"
+
+  - pattern: '\bgh\s+api\s+'
+    points: 5
+    level: low
+    message: "GitHub API call"
+    detail: "Verify the endpoint and method"

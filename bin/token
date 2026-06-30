@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""token — Agent-readable token manifest query tool.
+
+Single source of truth for all tokens, credentials, and keys.
+Agents use this to discover available tokens, their permissions,
+scope, and where they're used. Never hardcode token values —
+always reference via the manifest.
+
+Usage:
+  token list                              # list all tokens (summary)
+  token list --category github            # filter by category
+  token list --type ssh-key               # filter by type
+  token info <token-id>                   # full details for one token
+  token info <token-id> --permissions     # just permissions
+  token usage <token-id>                  # where this token is used
+  token verify <token-id>                 # check if token is still valid
+  token sync-github                       # sync metadata from GitHub API
+  token categories                        # list all token categories
+  token types                             # list all token types
+  token check-rotation                    # list tokens due for rotation
+"""
+
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO_DIR = Path(__file__).parent.parent
+MANIFEST_PATH = REPO_DIR / "packages" / "tokens" / "manifest.json"
+
+INDENT = 2
+
+
+def load_manifest():
+    with open(MANIFEST_PATH) as f:
+        return json.load(f)
+
+
+def save_manifest(m):
+    with open(MANIFEST_PATH, "w") as f:
+        json.dump(m, f, indent=INDENT)
+        f.write("\n")
+
+
+def format_dt(dt_str):
+    if not dt_str:
+        return "never"
+    try:
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d")
+    except ValueError:
+        return dt_str[:10]
+
+
+def list_tokens(m, category=None, type_filter=None):
+    tokens = m.get("tokens", [])
+    if category:
+        tokens = [t for t in tokens if t.get("category") == category]
+    if type_filter:
+        tokens = [t for t in tokens if t.get("type") == type_filter]
+
+    if not tokens:
+        print("No tokens found.")
+        return
+
+    print(f"{'ID':30s} {'Type':25s} {'Category':15s} {'Status':10s} {'Created':12s}")
+    print("-" * 95)
+    for t in tokens:
+        tid = t.get("id", "?")[:28]
+        ttype = t.get("type", "?")[:23]
+        cat = t.get("category", "?")[:13]
+        status = t.get("status", "?")[:8]
+        created = format_dt(t.get("created_at"))
+        print(f"{tid:30s} {ttype:25s} {cat:15s} {status:10s} {created:12s}")
+
+
+def show_info(m, token_id, show_permissions=False):
+    tokens = m.get("tokens", [])
+    token = None
+    for t in tokens:
+        if t.get("id") == token_id:
+            token = t
+            break
+    if not token:
+        print(f"Token '{token_id}' not found.")
+        print(f"Available: {', '.join(t['id'] for t in tokens)}")
+        sys.exit(1)
+
+    if show_permissions:
+        print(json.dumps(token.get("permissions", {}), indent=INDENT))
+        return
+
+    print(f"ID:           {token['id']}")
+    print(f"Type:         {token.get('type', '?')}")
+    print(f"Category:     {token.get('category', '?')}")
+    print(f"Title:        {token.get('title', '?')}")
+    print(f"Status:       {token.get('status', '?')}")
+    print(f"Created:      {format_dt(token.get('created_at'))}")
+    print(f"Expires:      {format_dt(token.get('expires_at')) or 'never'}")
+    print(f"Last rotated: {format_dt(token.get('last_rotated'))}")
+    print(f"")
+    print(f"Storage:      {token.get('storage', {}).get('location', '?')}")
+    print(f"Encrypted:    {token.get('storage', {}).get('encrypted', '?')}")
+    print(f"")
+    print(f"Permissions:")
+    perms = token.get("permissions", {})
+    for k, v in perms.items():
+        if isinstance(v, dict):
+            print(f"  {k}:")
+            for sk, sv in v.items():
+                print(f"    {sk}: {sv}")
+        elif isinstance(v, list):
+            print(f"  {k}: {', '.join(str(x) for x in v)}")
+        else:
+            print(f"  {k}: {v}")
+    print(f"")
+    print(f"Usage ({len(token.get('usage', []))} locations):")
+    for u in token.get("usage", []):
+        print(f"  - {u.get('function', '?')}")
+        print(f"    Repo: {u.get('repo', 'N/A')}")
+        print(f"    Config: {u.get('config_ref', '?')}")
+        print(f"    Machine: {u.get('machine', '?')}")
+    print(f"")
+    print(f"Notes: {token.get('notes', '')}")
+
+
+def show_usage(m, token_id):
+    token = None
+    for t in m.get("tokens", []):
+        if t.get("id") == token_id:
+            token = t
+            break
+    if not token:
+        print(f"Token '{token_id}' not found.")
+        sys.exit(1)
+
+    print(f"Usage for: {token['id']} ({token.get('title', '')})")
+    print(f"")
+    for u in token.get("usage", []):
+        print(f"  Function:  {u.get('function', '?')}")
+        print(f"  Repo:      {u.get('repo', 'N/A')}")
+        print(f"  Config:    {u.get('config_ref', '?')}")
+        print(f"  Placeholder: {u.get('placeholder', 'none')}")
+        print(f"  Machine:   {u.get('machine', '?')}")
+        print(f"")
+
+
+def verify_token(m, token_id):
+    token = None
+    for t in m.get("tokens", []):
+        if t.get("id") == token_id:
+            token = t
+            break
+    if not token:
+        print(f"Token '{token_id}' not found.")
+        sys.exit(1)
+
+    ttype = token.get("type", "")
+    status = token.get("status", "unknown")
+
+    if status != "active":
+        print(f"Status: {status.upper()} — not active")
+        sys.exit(1)
+
+    if ttype == "github-fine-grained-pat" or ttype == "github-pat":
+        try:
+            result = subprocess.run(
+                ["gh", "api", "user"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                user = json.loads(result.stdout)
+                print(f"Status: ACTIVE — authenticated as {user.get('login', '?')}")
+                # Check token scopes
+                scope_result = subprocess.run(
+                    ["gh", "auth", "status"],
+                    capture_output=True, text=True, timeout=10
+                )
+                scopes_line = [l for l in scope_result.stderr.split("\n") if "scopes" in l.lower()]
+                if scopes_line:
+                    print(f"Scopes: {scopes_line[0].split('scopes:')[-1].strip()}")
+                # Verify repo access
+                for repo in token.get("permissions", {}).get("repositories", []):
+                    r = subprocess.run(
+                        ["gh", "api", f"repos/{repo}"],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    if r.returncode == 0:
+                        print(f"  Repo {repo}: accessible")
+                    else:
+                        print(f"  Repo {repo}: ACCESS DENIED")
+            else:
+                print(f"Status: UNREACHABLE — API returned {result.returncode}")
+                print(f"  {result.stderr[:200]}")
+                sys.exit(1)
+        except FileNotFoundError:
+            print("Status: UNKNOWN — gh CLI not available")
+            sys.exit(1)
+    elif ttype == "ssh-key":
+        key_path = token.get("storage", {}).get("location", "")
+        if key_path and os.path.exists(os.path.expanduser(key_path)):
+            print(f"Status: ACTIVE — key exists at {key_path}")
+            # Check if key is loaded in ssh-agent
+            fp_result = subprocess.run(
+                ["ssh-keygen", "-l", "-f", os.path.expanduser(key_path)],
+                capture_output=True, text=True, timeout=5
+            )
+            if fp_result.returncode == 0:
+                print(f"  Fingerprint: {fp_result.stdout.strip()}")
+        else:
+            print(f"Status: MISSING — key not found at {key_path}")
+            sys.exit(1)
+    else:
+        print(f"Status: UNKNOWN — no verification method for type '{ttype}'")
+
+    # Check rotation
+    last_rotated = token.get("last_rotated")
+    rotation_days = m.get("token_types", {}).get(ttype, {}).get("rotation_period_days", 90)
+    if last_rotated:
+        rotated = datetime.fromisoformat(last_rotated.replace("Z", "+00:00"))
+        days_since = (datetime.now(timezone.utc) - rotated).days
+        if days_since > rotation_days:
+            print(f"  ROTATION DUE: {days_since}d since last rotation (max {rotation_days}d)")
+
+
+def sync_github(m):
+    """Sync metadata from GitHub API for github-type tokens."""
+    for token in m.get("tokens", []):
+        ttype = token.get("type", "")
+        if "github" not in ttype:
+            continue
+
+        try:
+            # Get user info
+            result = subprocess.run(
+                ["gh", "api", "user"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                user = json.loads(result.stdout)
+                token["_synced_github_login"] = user.get("login")
+                token["_synced_github_id"] = user.get("id")
+                token["_synced_at"] = datetime.now(timezone.utc).isoformat()
+                print(f"  Synced {token['id']}: login={user.get('login')}")
+
+            # Get token scopes
+            scope_result = subprocess.run(
+                ["gh", "auth", "status"],
+                capture_output=True, text=True, timeout=10
+            )
+            scopes_line = [l for l in scope_result.stderr.split("\n") if "scopes" in l.lower()]
+            if scopes_line:
+                scopes = scopes_line[0].split("scopes:")[-1].strip()
+                token["_synced_scopes"] = scopes
+                print(f"    Scopes: {scopes}")
+        except Exception as e:
+            print(f"  Failed to sync {token['id']}: {e}")
+
+    save_manifest(m)
+
+
+def check_rotation(m):
+    """List tokens due for rotation."""
+    due = []
+    for token in m.get("tokens", []):
+        if token.get("status") != "active":
+            continue
+        last_rotated = token.get("last_rotated")
+        ttype = token.get("type", "")
+        rotation_days = m.get("token_types", {}).get(ttype, {}).get("rotation_period_days", 90)
+        if last_rotated:
+            rotated = datetime.fromisoformat(last_rotated.replace("Z", "+00:00"))
+            days_since = (datetime.now(timezone.utc) - rotated).days
+            if days_since >= rotation_days:
+                due.append((token, days_since, rotation_days))
+
+    if not due:
+        print("All tokens are within their rotation period.")
+        return
+
+    print(f"{'Token':30s} {'Days since':12s} {'Max days':10s}")
+    print("-" * 55)
+    for token, days, maxd in due:
+        print(f"{token['id']:30s} {days:8d}d   {maxd:8d}d")
+
+
+def main():
+    m = load_manifest()
+
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+    args = sys.argv[2:]
+
+    if cmd == "list":
+        category = None
+        type_filter = None
+        for i, a in enumerate(args):
+            if a == "--category" and i + 1 < len(args):
+                category = args[i + 1]
+            if a == "--type" and i + 1 < len(args):
+                type_filter = args[i + 1]
+        list_tokens(m, category, type_filter)
+
+    elif cmd == "info":
+        show_permissions = "--permissions" in args
+        token_id = args[0] if args and not args[0].startswith("--") else None
+        if not token_id:
+            print("Usage: token info <token-id>")
+            sys.exit(1)
+        show_info(m, token_id, show_permissions)
+
+    elif cmd == "usage":
+        token_id = args[0] if args else None
+        if not token_id:
+            print("Usage: token usage <token-id>")
+            sys.exit(1)
+        show_usage(m, token_id)
+
+    elif cmd == "verify":
+        token_id = args[0] if args else None
+        if not token_id:
+            print("Usage: token verify <token-id>")
+            sys.exit(1)
+        verify_token(m, token_id)
+
+    elif cmd == "sync-github":
+        sync_github(m)
+
+    elif cmd == "categories":
+        for cat in m.get("categories", []):
+            print(f"  {cat['id']:20s} {cat.get('description', '')}")
+
+    elif cmd == "types":
+        for tid, tinfo in m.get("token_types", {}).items():
+            print(f"  {tid:30s} {tinfo.get('description', '')}")
+
+    elif cmd == "check-rotation":
+        check_rotation(m)
+
+    else:
+        print(f"Unknown: {cmd}")
+        print(__doc__)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

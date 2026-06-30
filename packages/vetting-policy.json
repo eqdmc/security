@@ -1,0 +1,109 @@
+{
+  "$schema": "https://eqdmc.github.io/schemas/vetting-policy-v1.json",
+  "version": "1",
+  "description": "Vetting policy — single source of truth for what agents may and may not run. This file replaces hardcoded patterns in dotfiles-guard.py and opencode.json.",
+  "blocked_commands_patterns": [
+    "flatpak install", "flatpak update", "flatpak upgrade",
+    "dnf install", "dnf update", "dnf upgrade",
+    "apt install", "apt-get install",
+    "brew install", "brew cask install", "brew uninstall", "brew remove", "brew upgrade",
+    "pip install", "pip3 install", "pip uninstall", "pip3 uninstall", "pipx install",
+    "uv add", "uv pip install",
+    "npm install -g", "npm uninstall -g", "yarn global", "pnpm add -g",
+    "cargo install",
+    "snap install",
+    "gem install",
+    "go install"
+  ],
+  "curl_pipe_patterns": [
+    "curl * | sh*", "curl * | bash*",
+    "wget * | sh*", "wget * | bash*"
+  ],
+  "evasion_patterns": [
+    "cat * | sh*", "head * | sh*", "tail * | sh*",
+    "bash *-c*curl*", "bash *-c*wget*",
+    "eval *curl*", "eval *wget*",
+    "source *(*curl*", "source *(*wget*",
+    "base64 *|*sh*", "base64 *|*bash*",
+    "curl *-o*&&*bash*", "curl *-o*&&*sh*", "wget *-O*&&*bash*",
+    "python* -m pip install",
+    "deno install", "bun install"
+  ],
+  "allowed_commands": [
+    "bin/vet", "bin/vet-install",
+    "./bin/vet", "./bin/vet-install",
+    "bash packages/install.sh"
+  ],
+  "ecosystem_adapters": {
+    "flathub": {
+      "adapter": "checks/adapters/flathub.sh",
+      "install_command": "flatpak install -y flathub {{id}}",
+      "manifest_file": "flatpak-packages.txt",
+      "update_check_command": "flatpak remote-ls --updates flathub {{id}}",
+      "release_notes_source": "github_releases",
+      "gate_count": 6
+    },
+    "npm": {
+      "adapter": "checks/adapters/npm.sh",
+      "install_command": "npm install -g {{id}}@{{version}}",
+      "manifest_file": null,
+      "update_check_command": "npm view {{id}} version",
+      "release_notes_source": "npm_changelog",
+      "gate_count": 5
+    },
+    "pypi": {
+      "adapter": "checks/adapters/pypi.sh",
+      "install_command": "pip3 install {{id}}=={{version}}",
+      "manifest_file": "pip-tools.txt",
+      "update_check_command": "pip index versions {{id}}",
+      "release_notes_source": "github_releases",
+      "gate_count": 5
+    },
+    "crates": {
+      "adapter": "checks/adapters/crates.sh",
+      "install_command": "cargo install {{id}} --version {{version}}",
+      "manifest_file": "cargo-tools.txt",
+      "update_check_command": "cargo search {{id}} --limit 1",
+      "release_notes_source": "github_releases",
+      "gate_count": 5
+    }
+  },
+  "manifest_schema": {
+    "$ref": "manifest.json",
+    "required_fields": ["id", "ecosystem", "name", "version", "adr", "vetted_at"]
+  },
+  "signing": {
+    "required": true,
+    "key_type": "ssh",
+    "key_id": "/home/z/.ssh/id_ed25519_signing.pub",
+    "hardware_backed": false,
+    "passphrase_protected": true,
+    "passphrase_location": "~/.ssh/signing-passphrase (0400, auto-loaded via ssh-agent in .bashrc)",
+    "gh_key_id": 1028410,
+    "last_verified": "2026-06-29T20:38:00Z",
+    "verified_status": "G (Good signature)",
+    "todo": "migrate to YubiKey-resident key — FIDO2 PIN blocked (needs physical reinsertion), PIV PIN unknown (3 tries remain). User declined FIDO reset (passkeys in use). Migration requires PIN knowledge or new YubiKey."
+  },
+  "token_audit": {
+    "scopes": "admin:public_key, admin:ssh_signing_key, gist, read:org, repo, workflow",
+    "storage": "~/.config/gh/hosts.yml (90 bytes, 0400, readable by agent as this user)",
+    "admin_ssh_signing_key": "CRITICAL: agent can register new signing keys to the account without user intervention. This bypasses ALL signing enforcement.",
+    "repo": "Full write access to all repos the user can access.",
+    "recommendation": "Replace with fine-grained token scoped to eqdmc/security and dotfiles repos only, WITHOUT admin:ssh_signing_key.",
+    "todo_priority": "P0",
+    "todo": "User must create a new fine-grained token at https://github.com/settings/tokens with minimal scopes (repo: eqdmc/security + eqdmc/dotfiles, no admin:ssh_signing_key). Then replace ~/.config/gh/hosts.yml. Keep old token until new one is verified."
+  },
+  "containment": {
+    "level": "tripwire",
+    "description": "This system prevents honest-mistake installs and provides an audit trail. It does NOT contain a compromised agent, because the agent holds the credentials (gh token with repo+admin:ssh_signing_key scopes) and exec capability that would be needed to forge approvals.",
+    "effective_default": "allow",
+    "active_config": "~/.config/opencode/opencode.jsonc (no permission block)",
+    "why": "Session started from /home/z, which has no opencode.json. Resolved config has no permission block. Repo-level opencode.json deny rules are NOT loaded. Every command runs without restriction.",
+    "real_containment_requires": [
+      "Fine-grained token scoped to minimum repos, without admin:ssh_signing_key",
+      "Hardware-backed signing (YubiKey, blocked on PIN)",
+      "Network egress control or sandboxed exec environment",
+      "opencode.json permission block in the global config or session start directory"
+    ]
+  }
+}

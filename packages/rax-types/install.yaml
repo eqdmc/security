@@ -1,0 +1,42 @@
+# rax task type: install — package installation (already vetted)
+type: install
+label: "rax-install"
+icon: "📦"
+description: "Package installation — install an already-vetted package"
+close_on_verify: true
+required_labels:
+  - "agent-work"
+  - "rax-install"
+schema:
+  type: object
+  required: [package, ecosystem]
+  properties:
+    package:
+      type: string
+      description: "Package ID"
+    ecosystem:
+      type: string
+      description: "Package ecosystem"
+    version:
+      type: string
+      description: "Version to install"
+danger_patterns:
+  - "flatpak install"
+  - "pip install"
+  - "npm install"
+  - "sudo"
+verify_default: "echo 'checking installation...'; case {eco} in flathub) flatpak list | grep -q {package};; pip) pip3 list 2>/dev/null | grep -qi {package};; npm) npm list -g 2>/dev/null | grep -qi {package};; esac"
+rollback_default: "case {eco} in flathub) flatpak uninstall -y {package};; pip) pip3 uninstall -y {package};; npm) npm uninstall -g {package};; esac"
+issue_template: |
+  ## Install: {ecosystem}/{package} v{version}
+
+  {description}
+
+  **Action ID:** {action-id}
+
+  ### To approve
+  This package has been vetted and approved. Run `rax` to install.
+
+  ### Rollback
+  {rollback}
+close_on_verify: true

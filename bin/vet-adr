@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# vet-adr — Generate ADR from vet result JSON (universal, any ecosystem)
+# Usage: vet-adr <result.json>
+# Output: ADR markdown file in adrs/ with auto-incremented sequence number
+set -euo pipefail
+
+INPUT="${1:?Usage: vet-adr <result.json>}"
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ADRS_DIR="$SCRIPT_DIR/adrs"
+
+pkg=$(jq -r '.package' "$INPUT")
+ver=$(jq -r '.version' "$INPUT")
+eco=$(jq -r '.ecosystem' "$INPUT")
+license=$(jq -r '.metadata.license' "$INPUT")
+repo_url=$(jq -r '.metadata.repo_url' "$INPUT")
+gh_slug=$(jq -r '.metadata.gh_slug' "$INPUT")
+pub_time=$(jq -r '.metadata.publish_time' "$INPUT")
+raw_age=$(jq -r '.metadata.age_days // -1' "$INPUT")
+age_days=$([ "$raw_age" != "null" ] && echo "$raw_age" || echo "-1")
+maint_count=$(jq -r '.metadata.maintainer_count // 0' "$INPUT")
+maintainers=$(jq -r '.metadata.maintainers // [] | join(", ")' "$INPUT")
+scorecard=$(jq -r '.metadata.scorecard // "n/a"' "$INPUT")
+dep_count=$(jq -r '.metadata.dep_count // -1' "$INPUT")
+verdict=$(jq -r '.summary.verdict' "$INPUT")
+gates_pass=$(jq -r '.summary.gates_pass' "$INPUT")
+gates_total=$(jq -r '.summary.gates_total' "$INPUT")
+scored_pass=$(jq -r '.summary.scored_pass' "$INPUT")
+scored_total=$(jq -r '.summary.scored_total' "$INPUT")
+
+vuln_total=$(jq -r '.vulns.total // 0' "$INPUT")
+p1_plus=$(jq -r '.vulns.quadrant."P1+_kev" // 0' "$INPUT")
+p2=$(jq -r '.vulns.quadrant.P2_high_unlikely // 0' "$INPUT")
+p3=$(jq -r '.vulns.quadrant.P3_low_likely // 0' "$INPUT")
+p4=$(jq -r '.vulns.quadrant.P4_low_unlikely // 0' "$INPUT")
+blocking=$(jq -r '.vulns.blocking // 0' "$INPUT")
+
+g_license=$(jq -r '.gates.license // "N/A"' "$INPUT")
+g_cve=$(jq -r '.gates.cve // "N/A"' "$INPUT")
+g_scripts=$(jq -r '.gates.install_scripts // "N/A"' "$INPUT")
+g_quarantine=$(jq -r '.gates.quarantine // "N/A"' "$INPUT")
+g_match=$(jq -r '.gates.registry_repo_match // "N/A"' "$INPUT")
+s_scorecard=$(jq -r '.scored.scorecard // "N/A"' "$INPUT")
+s_maintainers=$(jq -r '.scored.maintainers // "N/A"' "$INPUT")
+s_postxz=$(jq -r '.scored.post_xz // "N/A"' "$INPUT")
+s_distro=$(jq -r '.scored.distro_inclusion // "N/A"' "$INPUT")
+s_deps=$(jq -r '.scored.dep_depth // "N/A"' "$INPUT")
+
+today=$(date +%Y-%m-%d)
+
+# Determine next sequence number
+last_seq=$(ls "$ADRS_DIR"/*.md 2>/dev/null | sort | tail -1 | grep -oP '\d+' || echo "0")
+next_seq=$(printf "%04d" $((10#$last_seq + 1)))
+filename="${ADRS_DIR}/${next_seq}-${eco}-${pkg}.md"
+
+# Clean pkg name for filename
+filename_safe=$(echo "$pkg" | sed 's|[@/#]|-|g')
+filename="${ADRS_DIR}/${next_seq}-${eco}-${filename_safe}.md"
+
+cat > "$filename" << ADR
+# ADR-${next_seq}: \`${eco}/${pkg}\` — ${verdict}
+
+- **Status:** Proposed
+- **Date:** ${today}
+- **Approved by:** pending (\`@eqdmc/security-review\`)
+- **Verdict:** ${verdict} (gates: ${gates_pass}/${gates_total}, scored: ${scored_pass}/${scored_total})
+
+## 1. Package
+
+- **Name:** \`${pkg}\`
+- **Ecosystem:** ${eco}
+- **Canonical source:** ${repo_url}
+- **Version adopted:** \`${ver}\`
+- **License:** ${license}
+
+## 2. Binary vetting results
+
+### Hard gates (all must PASS)
+
+| # | Gate | Result | Evidence |
+|---|---|---|---|
+| 1 | License is permissive | ${g_license} | \`${license}\` |
+| 2 | Zero P1+/P1 CVEs | ${g_cve} | ${vuln_total} total vulns, ${blocking} blocking |
+| 3 | No install scripts | ${g_scripts} | preinstall/postinstall/install checked |
+| 4 | Quarantine >= 7 days | ${g_quarantine} | Published ${pub_time} ($([ "$age_days" -ge 0 ] && echo "${age_days}d ago" || echo "N/A")) |
+| 5 | Registry-repo match | ${g_match} | ${eco} -> ${gh_slug} |
+
+### CVE quadrant breakdown (CVSS + EPSS + KEV)
+
+| Priority | Count | Action | Description |
+|---|---|---|---|
+| P1+ (KEV) | ${p1_plus} | BLOCK | Confirmed exploited in the wild |
+| P1 (high/likely) | 0 | BLOCK | CVSS >= 6.0 AND EPSS >= 0.2 |
+| P2 (high/unlikely) | ${p2} | WARN | CVSS >= 6.0, EPSS < 0.2 |
+| P3 (low/likely) | ${p3} | WARN | CVSS < 6.0, EPSS >= 0.2 |
+| P4 (low/unlikely) | ${p4} | ACCEPT | CVSS < 6.0, EPSS < 0.2 |
+
+### Scored checks (>= 3 must PASS)
+
+| # | Check | Result | Evidence |
+|---|---|---|---|
+| 6 | OpenSSF Scorecard >= 5.0 | ${s_scorecard} | Score: ${scorecard} |
+| 7 | Multiple maintainers | ${s_maintainers} | ${maint_count} maintainer(s): ${maintainers} |
+| 8 | Post-xz heuristic clean | ${s_postxz} | < 2 flags triggered |
+| 9 | Distro inclusion | ${s_distro} | Available on ${eco} |
+| 10 | Dep depth <= 500 | ${s_deps} | ${dep_count} transitive deps |
+
+## 3. Post-xz heuristic scan
+
+- $([ "$maint_count" -le 1 ] && echo "[x]" || echo "[ ]") Solo primary maintainer
+- [ ] Binary test fixtures with no human-readable origin
+- [ ] Build system doing work beyond compilation
+- [ ] Social pressure to merge quickly
+- [ ] Suspicious activity spike on previously-dormant package
+- [ ] Typosquat-adjacent name
+- [ ] Mismatched signing identity
+
+## 4. References
+
+- Upstream: ${repo_url}
+- OSV: https://osv.dev/list?ecosystem=${eco}&q=${pkg}
+$([ -n "$gh_slug" ] && echo "- Scorecard: https://scorecard.dev/viewer/?uri=github.com/${gh_slug}")
+
+## 5. Change log
+
+| Date | Change | By |
+|---|---|---|
+| ${today} | Initial ADR (automated via vet) | @eqdmc/security-review |
+ADR
+
+echo "$filename"

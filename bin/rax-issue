@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""rax-issue — GitHub issue management for rax HITL actions.
+
+Creates, updates, and closes issues tied to rax actions.
+
+Usage:
+  rax-issue create <action-file>          # Create issue from staged action
+  rax-issue close <action-file> <result>  # Close issue after verified execution
+  rax-issue comment <issue> <msg>        # Post a comment to an issue
+  rax-issue list [--type TYPE] [--open]   # List rax issues
+
+Each rax action MUST be tied to a GitHub issue. This tool ensures that.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+from rax_config import load as rax_load, default_repo, type_config, issue_config
+
+_config = rax_load()
+DEFAULT_REPO = default_repo()
+RAX_TYPES = _config.get("types", {})
+
+
+def parse_shell_action(path: Path) -> dict:
+    """Parse a shell-style rax action (headers + body) into a dict."""
+    text = path.read_text()
+    headers = {}
+    body_lines = []
+    in_header = True
+    for line in text.splitlines():
+        if line.startswith("#!") and in_header:
+            continue
+        m = re.match(r"^#\s*(\w[\w -]*?)\s*:\s*(.*)", line)
+        if m and in_header:
+            key = m.group(1).strip().lower().replace(" ", "_")
+            val = m.group(2).strip()
+            headers[key] = val
+            if key == "action_id":
+                headers["action_id"] = val
+        else:
+            in_header = False
+            body_lines.append(line)
+
+    return {
+        "title": headers.get("purpose", "Unnamed rax action"),
+        "description": headers.get("description", ""),
+        "issue": headers.get("issue"),
+        "action_id": headers.get("action_id", f"rax-{int(datetime.now().timestamp())}"),
+        "repo": headers.get("repo", DEFAULT_REPO),
+        "type": headers.get("type", "generic"),
+        "payload": {"repo": headers.get("repo", DEFAULT_REPO)},
+        "verify_command": headers.get("verify", ""),
+        "rollback_command": headers.get("rollback", ""),
+        "body": "\n".join(body_lines),
+    }
+
+
+def load_type_config(type_name: str) -> dict:
+    """Load a task type config from the SSOT packages/rax.yaml."""
+    tc = RAX_TYPES.get(type_name, {})
+    if tc:
+        return tc
+    return {"label": f"rax-{type_name}", "required_labels": ["agent-work"],
+            "close_on_verify": True, "issue_template": "## {title}\n\n{description}",
+            "danger_patterns": []}
+
+
+def create_issue(action: dict) -> int:
+    """Create a GitHub issue for a rax action. Returns issue number."""
+    type_config = load_type_config(action.get("type", "generic"))
+    iss_cfg = issue_config()
+    labels = list(iss_cfg.get("labels", ["agent-work"]))
+    if type_config.get("label"):
+        labels.append(type_config["label"])
+
+    auto_close = iss_cfg.get("auto_close_on_verify", True) and type_config.get("close_on_verify", True)
+
+    repo = action.get("repo", DEFAULT_REPO)
+    title = f"[rax] {action.get('title', 'Unnamed action')}"
+    desc = action.get("description", "")
+    template = type_config.get("issue_template", "## {title}\n\n{description}")
+    fmt_args = {
+        "title": action.get("title", ""),
+        "description": desc,
+        "action_id": action.get("action_id", ""),
+        "repo": repo,
+    }
+    # Add payload fields (don't override explicit args)
+    for k, v in action.get("payload", {}).items():
+        if isinstance(v, str) and k not in fmt_args:
+            fmt_args[k] = v
+    try:
+        body = template.format(**fmt_args)
+    except KeyError:
+        body = f"## {fmt_args.get('title', 'rax action')}\n\n{fmt_args.get('description', '')}\n\n*rax action: `{fmt_args.get('action_id', '')}`*"
+    body += f"\n\n---\n*Created by rax-issue | Action: `{action.get('action_id', '')}`*"
+
+    # Create the issue via gh CLI
+    result = subprocess.run(
+        ["gh", "issue", "create", "-R", repo,
+         "--title", title,
+         "--label", ",".join(labels),
+         "--body", body],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"FAIL: could not create issue: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    # Extract issue number from URL (e.g. "https://github.com/eqdmc/security/issues/123")
+    url = result.stdout.strip()
+    m = re.search(r"/issues/(\d+)$", url)
+    if m:
+        issue_num = int(m.group(1))
+        print(f"CREATED: #{issue_num} {title}")
+        return issue_num
+    else:
+        print(f"CREATED: {url}")
+        return 0
+
+
+def close_issue(repo: str, issue_num: int, action_id: str, title: str,
+                 exit_code: int, verify_exit: int, output_tail: str):
+    """Close a GitHub issue after verified rax execution."""
+    if exit_code == 0:
+        status = "COMPLETED"
+        if verify_exit == 0:
+            status = "COMPLETED (verified)"
+    else:
+        status = "FAILED"
+
+    body = (
+        f"rsax `{action_id}`: {status} — {title}\n\n"
+        f"**Exit:** {exit_code}\n"
+        f"**Verify:** {verify_exit}\n"
+        f"**Output:**\n```\n{output_tail[:2000]}\n```"
+    )
+
+    subprocess.run(
+        ["gh", "issue", "comment", str(issue_num), "-R", repo, "--body", body],
+        capture_output=True
+    )
+
+    if exit_code == 0 and verify_exit == 0:
+        subprocess.run(
+            ["gh", "issue", "close", str(issue_num), "-R", repo,
+             "--comment", f"Auto-closed: {status}"],
+            capture_output=True
+        )
+        print(f"CLOSED: #{issue_num}")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    command = sys.argv[1]
+
+    if command == "create":
+        action_file = Path(sys.argv[2])
+        action = parse_shell_action(action_file)
+        issue_num = create_issue(action)
+        print(f"  Issue: #{issue_num}")
+
+    elif command == "close":
+        action_file = Path(sys.argv[2])
+        result_file = Path(sys.argv[3]) if len(sys.argv) > 3 else None
+        action = parse_shell_action(action_file)
+        issue_num = int(action.get("issue", 0))
+        if not issue_num:
+            print("FAIL: no issue number in action", file=sys.stderr)
+            sys.exit(1)
+
+        result = {}
+        if result_file and result_file.exists():
+            result = json.loads(result_file.read_text())
+
+        close_issue(
+            repo=action.get("repo", DEFAULT_REPO),
+            issue_num=issue_num,
+            action_id=action.get("action_id", "unknown"),
+            title=action.get("title", ""),
+            exit_code=result.get("exit", -1),
+            verify_exit=result.get("verify_exit", -1),
+            output_tail=result.get("output_tail", ""),
+        )
+
+    elif command == "comment":
+        issue_num = int(sys.argv[2])
+        message = sys.argv[3] if len(sys.argv) > 3 else sys.stdin.read()
+        subprocess.run(
+            ["gh", "issue", "comment", str(issue_num), "-R", DEFAULT_REPO,
+             "--body", message],
+            capture_output=True
+        )
+        print(f"COMMENTED: #{issue_num}")
+
+    elif command == "list":
+        type_filter = None
+        only_open = False
+        for i, arg in enumerate(sys.argv[2:], 2):
+            if arg == "--type" and i + 1 < len(sys.argv):
+                type_filter = sys.argv[i + 1]
+            elif arg == "--open":
+                only_open = True
+
+        cmd = ["gh", "issue", "list", "-R", DEFAULT_REPO, "--label", "agent-work",
+               "--json", "number,title,labels,state", "--limit", "50"]
+        if only_open:
+            cmd.append("--state")
+            cmd.append("open")
+        if type_filter:
+            cmd.extend(["-L", f"rax-{type_filter}"])
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            issues = json.loads(result.stdout)
+            for iss in issues:
+                labels = ",".join(l["name"] for l in iss.get("labels", []))
+                icon = "🔴" if iss["state"] == "open" else "✅"
+                print(f"  {icon} #{iss['number']} [{labels}] {iss['title'][:60]}")
+        else:
+            print(f"FAIL: {result.stderr}", file=sys.stderr)
+            sys.exit(1)
+
+    else:
+        print(f"Unknown: {command}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

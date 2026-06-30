@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Generate opencode.json permission rules from vetting-policy.json SSOT.
+
+Usage:
+  python3 bin/generate-configs                         # print to stdout
+  python3 bin/generate-configs --write                  # write to opencode.json
+  python3 bin/generate-configs --check                  # exit 1 if files differ
+
+The vetting-policy.json is the single source of truth for deny/allow patterns.
+opencode.json and dotfiles-guard.py should derive from it, not duplicate it.
+"""
+
+import json
+import os
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+POLICY_PATH = os.path.join(REPO, "packages", "vetting-policy.json")
+CONFIG_PATH = os.path.join(REPO, "opencode.json")
+
+COMMON_ALLOW = {
+    "ls *": "allow",
+    "cat *": "allow",
+    "grep *": "allow",
+    "rg *": "allow",
+    "find *": "allow",
+    "which *": "allow",
+    "command -v *": "allow",
+    "type *": "allow",
+    "jq *": "allow",
+    "date *": "allow",
+    "echo *": "allow",
+    "printf *": "allow",
+    "mkdir *": "allow",
+    "touch *": "allow",
+    "python3 *": "allow",
+    "git status*": "allow",
+    "git diff*": "allow",
+    "git log*": "allow",
+    "git add*": "allow",
+    "git commit*": "allow",
+    "git fetch*": "allow",
+    "git pull*": "allow",
+    "git checkout *": "allow",
+    "git branch *": "allow",
+}
+
+COMMON_ASK = {
+    "git push*": "ask",
+    "git push *--force*": "ask",
+    "gh repo edit*": "ask",
+    "gh api*-X DELETE*": "ask",
+    "gh api*-X PATCH*": "ask",
+    "gh api*-X PUT*": "ask",
+    "gh api*ruleset*": "ask",
+    "rm -rf *": "ask",
+    "sudo *": "ask",
+}
+
+
+def load_policy():
+    with open(POLICY_PATH) as f:
+        return json.load(f)
+
+
+def generate_opencode(policy):
+    """Generate opencode.json bash permission block from policy data."""
+    bash_rules = {}
+
+    # Allow rules (common)
+    for rule, action in COMMON_ALLOW.items():
+        bash_rules[rule] = action
+
+    # Allow rules (vetting workflow)
+    for cmd in policy.get("allowed_commands", []):
+        bash_rules[cmd + "*"] = "allow"
+
+    # Ask rules
+    for rule, action in COMMON_ASK.items():
+        bash_rules[rule] = action
+
+    # Deny rules (package manager commands)
+    for cmd in policy.get("blocked_commands_patterns", []):
+        bash_rules[cmd + "*"] = "deny"
+
+    # Deny rules (curl|sh, wget|sh)
+    for pattern in policy.get("curl_pipe_patterns", []):
+        bash_rules[pattern] = "deny"
+
+    # Deny rules (evasion patterns)
+    for pattern in policy.get("evasion_patterns", []):
+        bash_rules[pattern] = "deny"
+
+    # Catch-all: ask for everything else
+    bash_rules["*"] = "ask"
+
+    return {
+        "$schema": "https://opencode.ai/config.json",
+        "model": "deepseek/deepseek-v4-flash",
+        "small_model": "deepseek/deepseek-v4-flash",
+        "disabled_providers": ["openai", "google"],
+        "permission": {
+            "bash": bash_rules,
+            "edit": "allow",
+            "write": "allow",
+            "webfetch": "allow",
+        },
+        "instructions": [
+            "../eqdmc/agent-harness/AGENTS.md",
+            "../eqdmc/agent-harness/ENVIRONMENT.md",
+            "../eqdmc/agent-harness/HARNESS.md",
+            "AGENTS.md",
+            ".opencode/instructions/rax-check.md",
+        ],
+    }
+
+
+def main():
+    policy = load_policy()
+    generated = generate_opencode(policy)
+
+    if "--write" in sys.argv:
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(generated, f, indent=2)
+            f.write("\n")
+        print(f"Wrote {CONFIG_PATH}")
+    elif "--check" in sys.argv:
+        with open(CONFIG_PATH) as f:
+            current = json.load(f)
+        # Compare permission blocks (ignore non-permission fields like instructions)
+        if current.get("permission") == generated.get("permission"):
+            print("OK: opencode.json matches vetting-policy.json")
+            sys.exit(0)
+        else:
+            print("DRIFT: opencode.json does NOT match vetting-policy.json")
+            print("Run: python3 bin/generate-configs --write")
+            sys.exit(1)
+    else:
+        print(json.dumps(generated, indent=2))
+
+
+if __name__ == "__main__":
+    main()

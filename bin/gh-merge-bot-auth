@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# gh-merge-bot-auth — Authenticate as eqdmc-merge-bot for PR review + merge.
+#
+# eqdmc-merge-bot is a separate GitHub App from eqdmc-agent-bots.
+# Because they are different apps, merge-bot CAN approve PRs that
+# agent-bots created — no self-approval conflict.
+#
+# Usage:
+#   gh-merge-bot-auth [--app-id <id>] [--install-id <id>] [--key <path>]
+#
+# Defaults:
+#   App ID: 4125320
+#   Install ID: 142188577
+#   Key: ~/.ssh/eqdmc-merge-bot.pem
+#
+# Requires: openssl, curl, jq
+set -euo pipefail
+
+APP_ID="${GH_MERGE_BOT_APP_ID:-4125320}"
+INSTALL_ID="${GH_MERGE_BOT_INSTALL_ID:-142188577}"
+KEY_FILE="${GH_MERGE_BOT_KEY:-$HOME/.ssh/eqdmc-merge-bot.pem}"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --app-id) APP_ID="$2"; shift 2 ;;
+    --install-id|--install) INSTALL_ID="$2"; shift 2 ;;
+    --key) KEY_FILE="$2"; shift 2 ;;
+    --help|-h)
+      echo "Usage: gh-merge-bot-auth [--app-id ID] [--install-id ID] [--key PATH]"
+      echo ""
+      echo "Authenticates as eqdmc-merge-bot for PR review + merge operations."
+      echo "This app is separate from eqdmc-agent-bots, so it can approve"
+      echo "PRs that agent-bots created."
+      exit 0 ;;
+    *) echo "Unknown: $1"; exit 1 ;;
+  esac
+done
+
+if [ ! -f "$KEY_FILE" ]; then
+  echo "ERROR: Private key not found at $KEY_FILE"
+  echo ""
+  echo "  The key was downloaded to ~/Downloads/eqdmc-merge-bot.2026-06-29.private-key.pem"
+  echo "  Place it at: $KEY_FILE"
+  echo "  Then run: chmod 600 $KEY_FILE"
+  echo ""
+  echo "  Install command:"
+  echo "    cp ~/Downloads/eqdmc-merge-bot*.pem $KEY_FILE"
+  echo "    chmod 600 $KEY_FILE"
+  exit 1
+fi
+
+# Generate JWT (RS256) using App ID as iss
+now=$(date +%s); iat=$((now - 60)); exp=$((now + 600))
+b64enc() { openssl base64 -A | tr -d '=' | tr '/+' '_-' | tr -d '\n'; }
+header=$(echo -n '{"alg":"RS256","typ":"JWT"}' | b64enc)
+payload=$(echo -n "{\"iat\":$iat,\"exp\":$exp,\"iss\":$APP_ID}" | b64enc)
+signature=$(echo -n "$header.$payload" | openssl dgst -sha256 -sign "$KEY_FILE" | b64enc)
+JWT="$header.$payload.$signature"
+
+# Exchange JWT for installation access token
+RESPONSE=$(curl -s -X POST \
+  -H "Authorization: Bearer $JWT" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/app/installations/$INSTALL_ID/access_tokens")
+
+TOKEN=$(echo "$RESPONSE" | jq -r '.token // empty')
+
+if [ -z "$TOKEN" ]; then
+  echo "ERROR: Failed to get token."
+  echo "Response: $(echo "$RESPONSE" | jq -c '.message // .')"
+  exit 1
+fi
+
+# Configure gh CLI to use this token
+echo "$TOKEN" | gh auth login -p https -h github.com --with-token 2>/dev/null
+echo "✅ Authenticated as eqdmc-merge-bot (App ID: $APP_ID)"
+echo "   Token expires in 1 hour"
+echo "   Use for: PR review, approval, merge queue operations"

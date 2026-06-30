@@ -1,0 +1,52 @@
+{
+  "$schema": "https://eqdmc.github.io/schemas/vetting-manifest-v1.json",
+  "version": "1",
+  "updated_at": "2026-06-29T20:00:00Z",
+  "updated_by": "eqdmc-admin",
+  "revision": 2,
+  "description": "Single source of truth for all vetted dependencies across eqdmc systems.",
+  "vetted": [
+    {
+      "id": "org.localsend.localsend_app",
+      "ecosystem": "flathub",
+      "name": "LocalSend",
+      "version": "1.17.0",
+      "pinned": true,
+      "adr": "adrs/0013-flathub-LocalSend.md",
+      "vetted_at": "2026-06-28T00:00:00Z",
+      "vetted_by": "bin/vet",
+      "summary": "Local file sharing over LAN — cross-platform, no internet required",
+      "tags": [
+        "file-transfer",
+        "lan",
+        "network",
+        "utility"
+      ],
+      "homepage": "https://localsend.org",
+      "source_url": "https://github.com/localsend/localsend",
+      "install": {
+        "command": "flatpak install -y flathub org.localsend.localsend_app",
+        "manifest": "flatpak-packages.txt",
+        "eco_hint": "flathub"
+      },
+      "capabilities": [
+        "send-files",
+        "receive-files",
+        "lan-discovery",
+        "cross-platform"
+      ],
+      "update_policy": "manual",
+      "available_upgrade": null,
+      "last_checked_at": "2026-06-29T20:00:00Z"
+    }
+  ],
+  "pending_requests": [],
+  "rejected": [
+    {
+      "id": "test-rax-flow",
+      "rejected_at": "2026-06-30T08:39:49Z",
+      "reason": "test cleanup"
+    }
+  ],
+  "plugins": []
+}

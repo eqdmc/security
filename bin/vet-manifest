@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+# vet-manifest — Query the SSOT manifest of vetted packages.
+#
+# Agents use this to discover approved packages, search by capability,
+# check the status of pending requests, and submit new requests.
+#
+# Usage:
+#   vet-manifest list [--eco <ecosystem>]          # list approved packages
+#   vet-manifest search <term>                      # search by name, tag, capability
+#   vet-manifest info <package>                     # full details for one package
+#   vet-manifest request <package> [--eco <ecosystem>] [--reason "..."]  # request vetting
+#   vet-manifest pending                            # list pending requests
+#   vet-manifest reject <package>                   # mark a rejected package
+#   vet-manifest status <package>                   # check if package is approved/pending/rejected
+#
+# Output: JSON (machine-readable), human-readable by default
+#
+# Requires: jq
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+MANIFEST="$SCRIPT_DIR/packages/manifest.json"
+HANDOFF_DIR="$SCRIPT_DIR/.handoffs"
+LOCKFILE="$SCRIPT_DIR/packages/.manifest.lock"
+HUMAN=true
+
+# ── Atomic manifest writer ──────────────────────────────────────────
+# Uses flock (advisory file lock) + mktemp (unique temp file) to
+# prevent concurrent-write corruption. Every write goes through this.
+write_manifest() {
+  local tmp
+  tmp=$(mktemp "$MANIFEST.XXXXXX")
+  # flock: exclusive lock on lockfile, 10s timeout, fail-closed
+  if ! flock -x -w 10 200; then
+    echo "ERROR: Could not acquire manifest lock (concurrent write in progress)" >&2
+    rm -f "$tmp"
+    return 1
+  fi
+  # Run the command (e.g. jq '...'), pipe to temp file
+  if "$@" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$MANIFEST"
+    return 0
+  else
+    echo "ERROR: Manifest write command failed" >&2
+    rm -f "$tmp"
+    return 1
+  fi
+} 200>"$LOCKFILE"
+
+# ── Help ──
+if [ $# -eq 0 ] || [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+  sed -n 's/^# //p; s/^#$//p' "$0"
+  exit 0
+fi
+
+SUBCOMMAND="$1"
+shift || true
+
+# Parse --json flag for machine-readable output
+for arg in "$@"; do
+  if [ "$arg" = "--json" ]; then
+    HUMAN=false
+  fi
+done
+
+case "$SUBCOMMAND" in
+  list)
+    eco=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --eco|--ecosystem) eco="$2"; shift 2 ;;
+        --json) shift ;;
+        *) shift ;;
+      esac
+    done
+    if [ -n "$eco" ]; then
+      jq --arg eco "$eco" '[.vetted[] | select(.ecosystem == $eco) | {id, name, version, summary: .summary[:60]}]' "$MANIFEST"
+    else
+      jq '[.vetted[] | {id, name, version, ecosystem, summary: .summary[:60]}]' "$MANIFEST"
+    fi
+    ;;
+
+  search)
+    term="${1:-}"
+    [ -z "$term" ] && { echo "Usage: vet-manifest search <term>" >&2; exit 1; }
+    shift 2>/dev/null || true
+    # Search by id, name, tags, capabilities, summary
+    jq --arg t "$term" '
+      [.vetted[] | select(
+        (.id | test($t; "i")) or
+        (.name | test($t; "i")) or
+        (.tags | join(" ") | test($t; "i")) or
+        (.capabilities | join(" ") | test($t; "i")) or
+        (.summary | test($t; "i"))
+      ) | {id, name, version, ecosystem, summary: .summary[:80]}]
+    ' "$MANIFEST"
+    ;;
+
+  info)
+    pkg="${1:-}"
+    [ -z "$pkg" ] && { echo "Usage: vet-manifest info <package-id>" >&2; exit 1; }
+    jq --arg p "$pkg" '.vetted[] | select(.id == $p or .name == $p)' "$MANIFEST"
+    ;;
+
+  request)
+    pkg="${1:-}"
+    [ -z "$pkg" ] && { echo "Usage: vet-manifest request <package> [--eco <eco>] [--reason ...]" >&2; exit 1; }
+    shift
+    eco="auto"
+    reason="No reason provided"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --eco|--ecosystem) eco="$2"; shift 2 ;;
+        --reason) reason="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+
+    # Check if already vetted
+    if jq -e --arg p "$pkg" '[.vetted[] | select(.id == $p or .name == $p)] | length > 0' "$MANIFEST" > /dev/null 2>&1; then
+      echo "ALREADY_APPROVED: $pkg is already in the vetted manifest."
+      jq --arg p "$pkg" '.vetted[] | select(.id == $p or .name == $p)' "$MANIFEST"
+      exit 0
+    fi
+
+    # Check if already pending
+    if jq -e --arg p "$pkg" '[.pending_requests[] | select(.id == $p)] | length > 0' "$MANIFEST" > /dev/null 2>&1; then
+      echo "ALREADY_PENDING: $pkg already has a pending vetting request."
+      jq --arg p "$pkg" '.pending_requests[] | select(.id == $p)' "$MANIFEST"
+      exit 0
+    fi
+
+    # Generate a request ID
+    REQUEST_ID="req-$(date +%s)-$$"
+    SESSION_ID="${OPENCODE_SESSION_ID:-unknown}"
+
+    # Create handoff file for agent notification
+    mkdir -p "$HANDOFF_DIR"
+    HANDOFF_FILE="$HANDOFF_DIR/request-$REQUEST_ID.md"
+    cat > "$HANDOFF_FILE" << HANDOFF
+# Vetting Request: $pkg
+
+- **Request ID:** $REQUEST_ID
+- **Requested by:** $SESSION_ID
+- **Requested at:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
+- **Ecosystem:** $eco
+- **Reason:** $reason
+
+## Status: PENDING
+
+This package has been submitted for vetting. An agent or human will process
+the request through the vetting workflow:
+
+  1. Vetting: \`bin/vet "$pkg" --eco "$eco"\`
+  2. ADR generation: \`bin/vet "$pkg" --eco "$eco" --adr\`
+  3. Manifest update (auto)
+  4. Installation: \`bin/vet-install "$pkg" --eco "$eco"\$
+
+Once approved, this handoff file will be updated with the result.
+
+## How to process this request
+
+Run the vetting workflow:
+
+  \`\`\`
+  bin/vet "$pkg" --eco "$eco" --adr --no-install
+  bin/vet-request approve "$pkg"
+  \`\`\`
+HANDOFF
+
+    # Add to pending_requests in manifest (atomic write)
+    write_manifest jq --arg id "$pkg" \
+       --arg eco "$eco" \
+       --arg reason "$reason" \
+       --arg rid "$REQUEST_ID" \
+       --arg session "$SESSION_ID" \
+       --arg handoff "$HANDOFF_FILE" \
+       --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+       '.pending_requests += [{
+         "id": $id,
+         "ecosystem": $eco,
+         "reason": $reason,
+         "request_id": $rid,
+         "requested_by": $session,
+         "requested_at": $now,
+         "status": "pending",
+         "handoff_file": $handoff
+       }]' "$MANIFEST"
+
+    # Stage a rax action for human to process this vetting request
+    RAX_PENDING="${RAX_PENDING_FILE:-$HOME/.rax/pending.sh}"
+    mkdir -p "$(dirname "$RAX_PENDING")"
+    cat > "$RAX_PENDING" << RAXEOF
+#!/bin/bash
+# Purpose: Vet $pkg for $eco
+# Description: Vetting request from $SESSION_ID — $reason
+# Verify: test -f $SCRIPT_DIR/adrs/*-${eco}-$(echo "$pkg" | tr '/' '-')*
+# Issue: $REQUEST_ID
+# Action-ID: vet-$REQUEST_ID
+# Repo: eqdmc/security
+set -euo pipefail
+echo "Processing vetting request for $pkg ($eco)..."
+echo "Reason: $reason"
+echo ""
+echo "Run the vetting workflow:"
+echo "  bin/vet \"$pkg\" --eco \"$eco\" --adr --no-install"
+echo "  bin/vet-install \"$pkg\" --eco \"$eco\""
+RAXEOF
+    chmod 600 "$RAX_PENDING" 2>/dev/null || true
+
+    echo "REQUEST_SUBMITTED: $pkg (request ID: $REQUEST_ID)"
+    echo "  Handoff file: $HANDOFF_FILE"
+    echo "  rax action: $RAX_PENDING (run: rax)"
+    echo "  An agent will process this request through the vetting workflow."
+    ;;
+
+  approve)
+    # Called by vet-install after successful vetting
+    pkg="${1:-}"
+    [ -z "$pkg" ] && { echo "Usage: vet-manifest approve <package>" >&2; exit 1; }
+    shift 2>/dev/null || true
+
+    # Read from stdin JSON with the vetting result (id, eco, version, etc.)
+    VET_JSON=$(cat)
+    if [ -z "$VET_JSON" ] || [ "$VET_JSON" = "{}" ]; then
+      # Use args
+      eco="${1:-auto}"
+      ver="${2:-latest}"
+      adr="${3:-}"
+      summary="${4:-}"
+    else
+      eco=$(echo "$VET_JSON" | jq -r '.ecosystem // "auto"')
+      ver=$(echo "$VET_JSON" | jq -r '.version // "latest"')
+      adr=$(echo "$VET_JSON" | jq -r '.adr // ""')
+      summary=$(echo "$VET_JSON" | jq -r '.summary // ""')
+    fi
+
+    # Remove from pending, add to vetted (atomic write)
+    write_manifest jq --arg id "$pkg" \
+       --arg eco "$eco" \
+       --arg ver "$ver" \
+       --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+       '.vetted += [{
+         "id": $id,
+         "ecosystem": $eco,
+         "name": $id,
+         "version": $ver,
+         "pinned": true,
+         "adr": "",
+         "vetted_at": $now,
+         "vetted_by": "bin/vet",
+         "summary": "",
+         "tags": [],
+         "homepage": "",
+         "source_url": "",
+         "install": {"command": "", "manifest": "", "eco_hint": $eco},
+         "capabilities": [],
+         "update_policy": "manual",
+         "available_upgrade": null,
+         "last_checked_at": $now
+       }] | .pending_requests = [.pending_requests[] | select(.id != $id)]' \
+       "$MANIFEST"
+
+    echo "APPROVED: $pkg added to vetted manifest"
+    ;;
+
+  reject)
+    pkg="${1:-}"
+    reason="${2:-Rejected by admin}"
+    [ -z "$pkg" ] && { echo "Usage: vet-manifest reject <package> [reason]" >&2; exit 1; }
+
+    write_manifest jq --arg id "$pkg" \
+       --arg reason "$reason" \
+       --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+       '.rejected += [{
+         "id": $id,
+         "rejected_at": $now,
+         "reason": $reason
+       }] | .pending_requests = [.pending_requests[] | select(.id != $id)]' \
+       "$MANIFEST"
+
+    echo "REJECTED: $pkg"
+    ;;
+
+  pending)
+    jq '[.pending_requests[] | {id, ecosystem, reason, requested_at, status}]' "$MANIFEST"
+    ;;
+
+  status)
+    pkg="${1:-}"
+    [ -z "$pkg" ] && { echo "Usage: vet-manifest status <package>" >&2; exit 1; }
+    if jq -e --arg p "$pkg" '[.vetted[] | select(.id == $p or .name == $p)] | length > 0' "$MANIFEST" > /dev/null 2>&1; then
+      echo "APPROVED"
+      jq --arg p "$pkg" '.vetted[] | select(.id == $p or .name == $p) | {id, version, ecosystem, vetted_at, pinned}' "$MANIFEST"
+    elif jq -e --arg p "$pkg" '[.pending_requests[] | select(.id == $p)] | length > 0' "$MANIFEST" > /dev/null 2>&1; then
+      echo "PENDING"
+      jq --arg p "$pkg" '.pending_requests[] | select(.id == $p) | {id, ecosystem, reason, requested_at, status}' "$MANIFEST"
+    elif jq -e --arg p "$pkg" '[.rejected[] | select(.id == $p)] | length > 0' "$MANIFEST" > /dev/null 2>&1; then
+      echo "REJECTED"
+      jq --arg p "$pkg" '.rejected[] | select(.id == $p) | {id, rejected_at, reason}' "$MANIFEST"
+    else
+      echo "UNKNOWN: $pkg is not in the manifest. Use 'vet-manifest request $pkg' to submit it for vetting."
+    fi
+    ;;
+
+  *)
+    echo "Unknown subcommand: $SUBCOMMAND"
+    echo "Usage: vet-manifest {list|search|info|request|approve|reject|pending|status}"
+    exit 1
+    ;;
+esac

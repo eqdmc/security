@@ -1,0 +1,46 @@
+# rax task type: config — configuration file changes
+type: config
+label: "rax-config"
+icon: "⚙️"
+description: "Configuration changes — shell config, editor settings, dotfiles"
+close_on_verify: true
+required_labels:
+  - "agent-work"
+  - "rax-config"
+schema:
+  type: object
+  required: [target, change_summary]
+  properties:
+    target:
+      type: string
+      description: "Config file path relative to home"
+    change_summary:
+      type: string
+      description: "Summary of what changed"
+    rollback_strategy:
+      type: string
+      enum: [backup, git-revert, manual]
+      description: "How to undo this change"
+danger_patterns:
+  - "> ~/.zshrc"
+  - "> ~/.zprofile"
+  - "> ~/.bashrc"
+  - "> ~/.gitconfig"
+  - "> ~/.ssh/"
+  - "> ~/.config/"
+verify_default: "diff -q {backup} {target} 2>/dev/null && echo 'VERIFIED: change applied' || echo 'CHECK: file may not have changed as expected'"
+rollback_default: "mv {backup} {target} 2>/dev/null || echo 'No backup found — manual rollback needed'"
+issue_template: |
+  ## Config: {target}
+
+  {description}
+
+  **Change:** {change_summary}
+  **Action ID:** {action-id}
+
+  ### To approve
+  Review the change summary above. Run `rax` to apply.
+
+  ### Rollback strategy
+  {rollback_strategy} — a backup of the original file is created before modification.
+close_on_verify: true

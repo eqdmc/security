@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# vet — Universal package vetting for eqdmc/security
+#
+# Usage:
+#   vet <package> [version]                     # auto-detect ecosystem
+#   vet <package> [version] --eco <ecosystem>   # explicit ecosystem
+#   vet <package> [version] --adr               # also generate ADR
+#   vet <package> [version] --adr --no-install   # ADR only, skip install
+#
+# Ecosystems: auto (default), npm, pypi, flathub, crates, github
+#
+# Output: JSON vetting result to stdout, ADR to adrs/ if --adr
+#
+# Requires: jq, curl, git, gh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
+
+# ── Config ────────────────────────────────────────────────────────
+ADRS_DIR="$SCRIPT_DIR/adrs"
+CHECKS_DIR="$SCRIPT_DIR/checks"
+ADAPTERS_DIR="$CHECKS_DIR/adapters"
+POLICY_FILE="$SCRIPT_DIR/policy/vetting.yaml"
+
+# ── Args ───────────────────────────────────────────────────────────
+PKG=""
+VER="latest"
+ECO="auto"
+GEN_ADR=false
+SKIP_INSTALL=false
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --eco|--ecosystem) ECO="$2"; shift 2 ;;
+    --adr) GEN_ADR=true; shift ;;
+    --no-install|--skip-install) SKIP_INSTALL=true; shift ;;
+    -*)
+      if [ -z "$PKG" ]; then
+        echo "Usage: vet <package> [version] [--eco <ecosystem>] [--adr]" >&2
+        exit 1
+      fi
+      shift
+      ;;
+    *)
+      if [ -z "$PKG" ]; then
+        PKG="$1"
+      elif [ "$VER" = "latest" ]; then
+        VER="$1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+[ -z "$PKG" ] && { echo "Usage: vet <package> [version] [--eco <ecosystem>] [--adr]" >&2; exit 1; }
+
+# ── Ecosystem auto-detection ──────────────────────────────────────
+auto_detect() {
+  local name="$1"
+  local candidates=()
+
+  # Heuristic: Flathub IDs look like org.example.app
+  if [[ "$name" =~ ^[a-z]+\.[a-z]+\.[a-z_]+$ ]]; then
+    echo "flathub"
+    return
+  fi
+
+  # Heuristic: npm scoped packages look like @scope/name
+  if [[ "$name" == @*/* ]]; then
+    echo "npm"
+    return
+  fi
+
+  # Try each adapter in order; first to return valid metadata wins
+  for adapter in "$ADAPTERS_DIR"/*.sh; do
+    [ ! -x "$adapter" ] && continue
+    local eco_name
+    eco_name=$(basename "$adapter" .sh)
+    local result
+    result=$("$adapter" "$name" 2>/dev/null) || continue
+    local license
+    license=$(echo "$result" | jq -r '.metadata.license // ""')
+    [ -n "$license" ] && [ "$license" != "unknown" ] && { echo "$eco_name"; return; }
+  done
+
+  echo "npm"  # fallback
+}
+
+if [ "$ECO" = "auto" ]; then
+  ECO=$(auto_detect "$PKG")
+  info "Auto-detected ecosystem: ${BOLD}$ECO${NC}"
+fi
+
+# ── Find adapter ───────────────────────────────────────────────────
+ADAPTER="$ADAPTERS_DIR/${ECO}.sh"
+if [ ! -x "$ADAPTER" ]; then
+  die "No adapter for ecosystem '$ECO' (expected: $ADAPTER)"
+fi
+
+# ── Collect metadata ───────────────────────────────────────────────
+step "Collecting metadata from ${ECO}"
+META_FILE="$VET_TEMP/metadata.json"
+"$ADAPTER" "$PKG" "$VER" > "$META_FILE" 2>/dev/null || die "Adapter $ECO failed for $PKG@$VER"
+
+pkg_name=$(jq -r '.package' "$META_FILE")
+pkg_ver=$(jq -r '.version' "$META_FILE")
+info "Package: ${BOLD}$pkg_name${NC}@${BOLD}$pkg_ver${NC}"
+
+# ── Run hard gates ─────────────────────────────────────────────────
+step "Running hard gates"
+GATE_SCRIPTS=(
+  "$CHECKS_DIR/gate-license.sh"
+  "$CHECKS_DIR/gate-cve.sh"
+  "$CHECKS_DIR/gate-install-scripts.sh"
+  "$CHECKS_DIR/gate-quarantine.sh"
+  "$CHECKS_DIR/gate-registry-repo.sh"
+  "$CHECKS_DIR/gate-flatpak-permissions.sh"
+)
+
+results_arr="["
+first=true
+for script in "${GATE_SCRIPTS[@]}"; do
+  result=$(run_check "gate" "" "$script" "$META_FILE")
+  cid=$(echo "$result" | jq -r '.id')
+  res=$(echo "$result" | jq -r '.result')
+  ev=$(echo "$result" | jq -r '.evidence')
+  [ "$first" = "true" ] && first=false || results_arr="${results_arr},"
+  results_arr="${results_arr}${result}"
+  case "$res" in
+    PASS) ok "[gate] ${cid}: ${ev}" ;;
+    FAIL) error "[gate] ${cid}: ${ev}" ;;
+    N/A)  skip "[gate] ${cid}: ${ev}" ;;
+    *)    warn "[gate] ${cid}: ${ev}" ;;
+  esac
+done
+
+# ── Run scored checks ──────────────────────────────────────────────
+step "Running scored checks"
+SCORED_SCRIPTS=(
+  "$CHECKS_DIR/scored-scorecard.sh"
+  "$CHECKS_DIR/scored-maintainers.sh"
+  "$CHECKS_DIR/scored-postxz.sh"
+  "$CHECKS_DIR/scored-distro.sh"
+  "$CHECKS_DIR/scored-depdepth.sh"
+)
+
+for script in "${SCORED_SCRIPTS[@]}"; do
+  result=$(run_check "scored" "" "$script" "$META_FILE")
+  cid=$(echo "$result" | jq -r '.id')
+  res=$(echo "$result" | jq -r '.result')
+  ev=$(echo "$result" | jq -r '.evidence')
+  [ "$first" = "true" ] && first=false || results_arr="${results_arr},"
+  results_arr="${results_arr}${result}"
+  case "$res" in
+    PASS) ok "[scored] ${cid}: ${ev}" ;;
+    FAIL) error "[scored] ${cid}: ${ev}" ;;
+    N/A)  skip "[scored] ${cid}: ${ev}" ;;
+    *)    warn "[scored] ${cid}: ${ev}" ;;
+  esac
+done
+
+results_arr="${results_arr}]"
+
+# ── Compute verdict ────────────────────────────────────────────────
+step "Computing verdict"
+VERDICT=$(compute_verdict "$results_arr")
+echo "$VERDICT" | jq '.'
+
+verdict_str=$(echo "$VERDICT" | jq -r '.verdict')
+
+# ── Build final output ─────────────────────────────────────────────
+OUTPUT_FILE="$VET_TEMP/result.json"
+# Enrich metadata with computed values from gate results
+age_days=$(echo "$results_arr" | jq '[.[] | select(.id == "quarantine") | .age_days // -1] | first // -1')
+
+jq -n \
+  --arg pkg "$pkg_name" --arg ver "$pkg_ver" --arg eco "$ECO" \
+  --argjson meta "$(cat "$META_FILE" | jq '.metadata')" \
+  --argjson age_days "$age_days" \
+  --argjson vulns "$(echo "$results_arr" | jq '[.[] | select(.id == "cve")] | first | {total: (.evidence | split(" ") | first | tonumber), quadrant: .quadrant, blocking: .blocking, details: .details} // {total: 0, quadrant: {}, blocking: 0}')" \
+  --argjson gates "$(echo "$results_arr" | jq '[.[] | select(.type == "gate") | {key: .id, value: .result}] | from_entries')" \
+  --argjson scored "$(echo "$results_arr" | jq '[.[] | select(.type == "scored") | {key: .id, value: .result}] | from_entries')" \
+  --argjson summary "$VERDICT" \
+  '{
+    package: $pkg, version: $ver, ecosystem: $eco,
+    metadata: ($meta + {age_days: $age_days}),
+    vulns: $vulns,
+    gates: $gates,
+    scored: $scored,
+    summary: $summary
+  }' > "$OUTPUT_FILE"
+
+echo ""
+if [ "$verdict_str" = "APPROVED" ]; then
+  echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "  ${GREEN}  VERDICT: ${BOLD}${verdict_str}${NC}"
+  echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+else
+  echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "  ${RED}  VERDICT: ${BOLD}${verdict_str}${NC}"
+  echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+fi
+echo ""
+
+# ── Generate ADR if requested ─────────────────────────────────────
+if [ "$GEN_ADR" = "true" ]; then
+  step "Generating ADR"
+  ADR_SCRIPT="$SCRIPT_DIR/bin/vet-adr"
+  if [ -x "$ADR_SCRIPT" ]; then
+    "$ADR_SCRIPT" "$OUTPUT_FILE"
+    info "ADR generated in ${BOLD}$ADRS_DIR${NC}"
+  else
+    warn "vet-adr not found at $ADR_SCRIPT"
+  fi
+fi
+
+# ── Install hook (if not skipped) ─────────────────────────────────
+if [ "$verdict_str" = "APPROVED" ] && [ "$SKIP_INSTALL" = "false" ]; then
+  step "Verdict: APPROVED — ready for installation"
+  info "Run: ${BOLD}bash packages/install.sh${NC} to install"
+  info "Or: ${BOLD}vet-install <package>${NC} for automatic install"
+fi
+
+# Export result path for chaining
+echo "$OUTPUT_FILE"

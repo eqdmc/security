@@ -14,7 +14,11 @@
 #   RAX_POLICY_FILE   — danger patterns + thresholds (YAML)
 set -euo pipefail
 
-RAX_VERSION="2.0.0"
+_rax_path="$(realpath "$(command -v rax 2>/dev/null || echo "$0")" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")"
+_rax_bin="$(cd "$(dirname "$_rax_path")" && pwd)"
+_rax_repo="$(cd "$_rax_bin/.." && pwd)"
+source "$_rax_repo/lib/rax-config.sh"
+RAX_VERSION="${RAX_CLI_VERSION:-0.2.1}"
 
 # --- Args ---
 if [ "${1:-}" = "--version" ]; then
@@ -33,9 +37,46 @@ if [ "${1:-}" = "--show-policy" ]; then
     exit 0
 fi
 
+# --- Multi-action support ---
+# Usage: rax [N] or rax list
+#   rax     — run the lowest-numbered pending action
+#   rax 2   — run pending action ~/.rax/pending/2.sh
+#   rax list — list all pending actions
+RAX_PENDING_DIR="${RAX_PENDING_DIR:-$HOME/.rax/pending}"
+RAX_CMD="${1:-}"
+
+if [ "$RAX_CMD" = "list" ]; then
+    echo "Staged actions:"
+    if [ -d "$RAX_PENDING_DIR" ]; then
+        for f in "$RAX_PENDING_DIR"/[0-9]*.sh; do
+            [ -f "$f" ] || continue
+            num=$(basename "$f" .sh)
+            purpose=$(grep -m1 '^# Purpose:' "$f" 2>/dev/null | sed 's/.*: *//' || echo "no purpose")
+            echo "  rax $num — $purpose"
+        done
+    fi
+    exit 0
+fi
+
 # --- Paths (all env-var driven, sensible defaults) ---
 RAX_STATE_DIR="${RAX_STATE_DIR:-$HOME/.rax/state}"
-ACTION="${RAX_PENDING_FILE:-$HOME/.rax/pending.sh}"
+
+# Resolve pending action: RAX_PENDING_FILE > numbered arg > numbered dir > single file
+if [ -n "${RAX_PENDING_FILE:-}" ]; then
+    ACTION="$RAX_PENDING_FILE"
+elif [ -n "$RAX_CMD" ] && [ "$RAX_CMD" -eq "$RAX_CMD" ] 2>/dev/null; then
+    ACTION="$RAX_PENDING_DIR/$RAX_CMD.sh"
+    mkdir -p "$RAX_PENDING_DIR"
+elif [ -d "$RAX_PENDING_DIR" ] && ls "$RAX_PENDING_DIR"/[0-9]*.sh >/dev/null 2>&1; then
+    first=$(ls "$RAX_PENDING_DIR"/[0-9]*.sh 2>/dev/null | sort | head -1)
+    ACTION="$first"
+elif [ -f "$HOME/.rax/pending.sh" ]; then
+    ACTION="$HOME/.rax/pending.sh"
+else
+    echo "No pending actions. Stage one with: rax list"
+    exit 0
+fi
+
 RESULT_FILE="${RAX_RESULT_FILE:-$RAX_STATE_DIR/last-result.json}"
 AUDIT_FILE="${RAX_AUDIT_FILE:-$RAX_STATE_DIR/audit.jsonl}"
 SESSION_ID="${RAX_SESSION_ID:-unknown}"
@@ -111,27 +152,34 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
     fi
 fi
 
-# --- Repo validation (before cd — checks invoker's repo, not Workdir's) ---
-if [ -n "$REPO_HEADER" ]; then
-    if [ -n "$DETECTED_REPO" ] && [ "$REPO_HEADER" != "$DETECTED_REPO" ]; then
-        echo ""
-        printf "${RED}${BOLD}BLOCKED:${RESET} Repository mismatch\n"
-        printf "  Header:   %s\n" "$REPO_HEADER"
-        printf "  Actual:   %s\n" "$DETECTED_REPO"
-        printf "  ${DIM}The staged action targets a different repo than the current directory.${RESET}\n"
-        exit 1
-    fi
-fi
-
-# --- Workdir validation ---
+# --- Workdir routing (always use Workdir if available — run from anywhere) ---
 if [ -n "$WORKDIR_HEADER" ]; then
     WORKDIR_RESOLVED=$(realpath "$WORKDIR_HEADER" 2>/dev/null || echo "")
     if [ -z "$WORKDIR_RESOLVED" ] || [ ! -d "$WORKDIR_RESOLVED" ]; then
         echo ""
         printf "${RED}${BOLD}BLOCKED:${RESET} Workdir does not exist: %s\n" "$WORKDIR_HEADER"
+        printf "  ${DIM}Expected at: %s${RESET}\n" "$WORKDIR_HEADER"
         exit 1
     fi
     cd "$WORKDIR_RESOLVED"
+fi
+
+# --- Repo validation (AFTER cd — checks the action's target repo) ---
+if [ -n "$REPO_HEADER" ]; then
+    _rax_repo_after=""
+    if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        _rax_url=$(git remote get-url origin 2>/dev/null || echo "")
+        if [ -n "$_rax_url" ]; then
+            _rax_repo_after=$(echo "$_rax_url" | sed -E 's#^(ssh://[^/]+/|git@[^:]+:|https?://([^@/]+@)?[^/]+/)##; s#\.git$##')
+        fi
+    fi
+    if [ -n "$_rax_repo_after" ] && [ "$REPO_HEADER" != "$_rax_repo_after" ]; then
+        echo ""
+        printf "${YELLOW}${WARN_ICON}  Repository mismatch — action targets %s, current dir is %s${RESET}\n" \
+            "$REPO_HEADER" "$_rax_repo_after"
+        printf "  ${DIM}Running anyway (Workdir resolves to the action's target repo).${RESET}\n"
+    fi
+    unset _rax_repo_after _rax_url
 fi
 
 # --- Validation warnings ---
@@ -681,6 +729,31 @@ if [ $status -eq 0 ]; then
 else
     echo "[RSAX:failed] purpose=\"$PURPOSE\" exit=$status id=$ACTION_ID"
 fi
+
+# ─── FAILURE NOTIFICATION ───
+if [ $status -ne 0 ] || [ "${verify_status:-0}" -ne 0 ]; then
+    _rax_fail_reason=""
+    [ $status -ne 0 ] && _rax_fail_reason="action failed (exit $status)"
+    [ "${verify_status:-0}" -ne 0 ] && _rax_fail_reason="verification failed (exit ${verify_status:-0})"
+    _rax_fail_repo="${REPO_HEADER:-eqdmc/security}"
+    if command -v gh >/dev/null 2>&1; then
+        gh issue create -R "$_rax_fail_repo" \
+            --title "[rax-failure] $ACTION_ID — $_rax_fail_reason" \
+            --label "agent-work,rax-failure" \
+            --body "## rax action failed\n\n**Action:** \`$ACTION_ID\`\n**Purpose:** ${PURPOSE:-unknown}\n**Reason:** $_rax_fail_reason\n\nSee audit log for details: $AUDIT_FILE\n\n*Auto-reported by rax*" \
+            2>/dev/null | sed 's/^/  /' || true
+        printf "  ${YELLOW}⚠  rax action failed — issue created for triage${RESET}\n"
+    fi
+    unset _rax_fail_reason _rax_fail_repo
+fi
+
+# ─── FEEDBACK (via shared library) ───
+_rax_fb_lib="$(realpath "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/rax-feedback.sh" 2>/dev/null || echo "")"
+if [ -n "$_rax_fb_lib" ] && [ -f "$_rax_fb_lib" ]; then
+  source "$_rax_fb_lib"
+  collect_feedback "$ACTION_ID" "${PURPOSE:-unknown}"
+fi
+unset _rax_fb_lib
 
 # ─── NEXT STEPS ───
 echo ""

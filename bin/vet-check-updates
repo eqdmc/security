@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# vet-check-updates — Check all vetted packages for available upgrades.
+#
+# For each package with pinned=true, checks the ecosystem registry for
+# newer versions. Updates manifest.json with available_upgrade info.
+#
+# Usage:
+#   vet-check-updates                       # check all packages
+#   vet-check-updates <package>             # check specific package
+#   vet-check-updates --eco <ecosystem>     # check all in ecosystem
+#   vet-check-updates --notify              # create handoff if upgrades found
+#
+# Requires: jq, curl
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+MANIFEST="$SCRIPT_DIR/packages/manifest.json"
+HANDOFF_DIR="$SCRIPT_DIR/.handoffs"
+
+NOTIFY=false
+CHECK_PKG=""
+CHECK_ECO=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --notify) NOTIFY=true; shift ;;
+    --eco|--ecosystem) CHECK_ECO="$2"; shift 2 ;;
+    --help|-h)
+      sed -n 's/^# //p; s/^#$//p' "$0"
+      exit 0 ;;
+    *)
+      CHECK_PKG="$1"; shift ;;
+  esac
+done
+
+updates_found=0
+updates_json="[]"
+
+# Build filter
+if [ -n "$CHECK_PKG" ]; then
+  filter=".vetted[] | select(.id == \"$CHECK_PKG\" or .name == \"$CHECK_PKG\")"
+elif [ -n "$CHECK_ECO" ]; then
+  filter=".vetted[] | select(.ecosystem == \"$CHECK_ECO\")"
+else
+  filter=".vetted[]"
+fi
+
+echo "=== Checking for updates ==="
+
+for row in $(jq -r "$filter | @base64" "$MANIFEST"); do
+  _jq() {
+    echo "$row" | base64 -d | jq -r "$1"
+  }
+
+  id=$(_jq '.id')
+  eco=$(_jq '.ecosystem')
+  current=$(_jq '.version')
+  name=$(_jq '.name')
+
+  echo -n "  $name ($eco/$id): current=$current → "
+
+  latest=""
+  case "$eco" in
+    flathub)
+      # Check Flathub for available versions
+      latest=$(curl -sf "https://flathub.org/api/v2/appstream/$id" 2>/dev/null | jq -r '.currentReleaseVersion // ""') || true
+      ;;
+    npm)
+      latest=$(curl -sf "https://registry.npmjs.org/$id/latest" 2>/dev/null | jq -r '.version // ""') || true
+      ;;
+    pypi)
+      latest=$(curl -sf "https://pypi.org/pypi/$id/json" 2>/dev/null | jq -r '.info.version // ""') || true
+      ;;
+    crates)
+      latest=$(curl -sf "https://crates.io/api/v1/crates/$id" 2>/dev/null | jq -r '.crate.max_stable_version // ""') || true
+      ;;
+    *)
+      echo "unknown ecosystem"
+      continue
+      ;;
+  esac
+
+  if [ -z "$latest" ]; then
+    echo "check failed (offline? not found?)"
+    continue
+  fi
+
+  if [ "$latest" != "$current" ]; then
+    echo "UPGRADE AVAILABLE: $latest"
+    updates_found=$((updates_found + 1))
+    updates_json=$(echo "$updates_json" | jq --arg id "$id" --arg eco "$eco" --arg cur "$current" --arg lat "$latest" \
+      '. += [{"id": $id, "ecosystem": $eco, "current": $cur, "latest": $lat}]')
+  else
+    echo "up to date"
+  fi
+
+  # Update manifest with latest check
+  jq --arg id "$id" \
+     --arg latest "$latest" \
+     --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+     '(.vetted[] | select(.id == $id) | .available_upgrade) = $latest |
+      (.vetted[] | select(.id == $id) | .last_checked_at) = $now' \
+     "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
+done
+
+echo ""
+echo "=== $updates_found upgrade(s) available ==="
+
+if [ "$updates_found" -gt 0 ] && [ "$NOTIFY" = true ]; then
+  mkdir -p "$HANDOFF_DIR"
+  NOTIFY_FILE="$HANDOFF_DIR/upgrades-$(date +%s).md"
+  echo "# Package Upgrades Available" > "$NOTIFY_FILE"
+  echo "" >> "$NOTIFY_FILE"
+  echo "$updates_json" | jq -r '.[] | "- **\(.id)** (\(.ecosystem)): \(.current) → **\(.latest)**"' >> "$NOTIFY_FILE"
+  echo "" >> "$NOTIFY_FILE"
+  echo "To upgrade: \`bin/vet-install update <package> <version>\`" >> "$NOTIFY_FILE"
+  echo "Created notification: $NOTIFY_FILE"
+fi
+
+echo "$updates_json"
