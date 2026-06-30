@@ -257,3 +257,57 @@ types:
 
       ### To approve
       Review the action above. Run `rax` to execute.
+
+# Feedback configuration — change `method` to experiment with different formats.
+# Each method is tagged in the feedback log for A/B comparison over time.
+# The rax-review monthly summary aggregates by method to show which works best.
+feedback:
+  method: "yn-goal-text"  # one of: yn-goal-text, scale-goal-text, nps-text, text-only
+  methods:
+    yn-goal-text:
+      description: "Y/N satisfaction + Y/N goal achieved + optional text"
+      questions:
+        - key: "satisfied"
+          prompt: "Were you satisfied with this rax action?"
+          type: "yn"
+        - key: "achieved"
+          prompt: "Did this achieve what you needed?"
+          type: "yn"
+        - key: "improve"
+          prompt: "What could be improved?"
+          type: "text"
+          optional: true
+    scale-goal-text:
+      description: "1-5 satisfaction + Y/N goal achieved + optional text"
+      questions:
+        - key: "satisfaction"
+          prompt: "How satisfied are you? (1-5, 1=no 5=yes)"
+          type: "scale"
+          min: 1
+          max: 5
+        - key: "achieved"
+          prompt: "Did this achieve what you needed?"
+          type: "yn"
+        - key: "improve"
+          prompt: "What could be improved?"
+          type: "text"
+          optional: true
+    nps-text:
+      description: "NPS (0-10 likelihood to recommend) + optional text"
+      questions:
+        - key: "nps"
+          prompt: "How likely would you be to recommend rax to others? (0-10)"
+          type: "scale"
+          min: 0
+          max: 10
+        - key: "improve"
+          prompt: "What could be improved?"
+          type: "text"
+          optional: true
+    text-only:
+      description: "Single open-ended question"
+      questions:
+        - key: "improve"
+          prompt: "What could be improved?"
+          type: "text"
+          optional: false
