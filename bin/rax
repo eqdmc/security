@@ -693,6 +693,53 @@ else
     echo "[RSAX:failed] purpose=\"$PURPOSE\" exit=$status id=$ACTION_ID"
 fi
 
+# ─── FEEDBACK ───
+echo ""
+printf "${GREEN}───── FEEDBACK ───────────────────────────────────────────${RESET}\n"
+echo ""
+printf "  How was this rax action?\n"
+echo ""
+printf "  ${DIM}1${RESET}  good       — Worked as expected, smooth process\n"
+printf "  ${DIM}2${RESET}  slow       — Too many steps, took too long\n"
+printf "  ${DIM}3${RESET}  confusing  — Unclear what to do or what happened\n"
+printf "  ${DIM}4${RESET}  broken     — Bug or error in the rax flow\n"
+printf "  ${DIM}5${RESET}  skip       — Don't ask this time\n"
+echo ""
+printf "  Rating [1-5]: "
+read -r _rax_fb_rating
+echo ""
+
+_rax_fb_action_id="$ACTION_ID"
+_rax_fb_purpose="${PURPOSE:-unknown}"
+_rax_fb_note=""
+
+case "$_rax_fb_rating" in
+  1) _rax_fb_label="good" ;;
+  2) _rax_fb_label="slow" ;;
+  3) _rax_fb_label="confusing" ;;
+  4) _rax_fb_label="broken" ;;
+  *) _rax_fb_label="" ;;
+esac
+
+if [ -n "$_rax_fb_label" ]; then
+  printf "  Optional note (press Enter to skip): "
+  read -r _rax_fb_note
+  echo ""
+  # Submit feedback via the rax-feedback tool
+  if command -v rax-feedback >/dev/null 2>&1; then
+    rax-feedback --action "$_rax_fb_action_id" --rating "$_rax_fb_label" --note "${_rax_fb_note:-}" 2>&1 | sed 's/^/  /'
+  else
+    _rax_fb_repo="${REPO_HEADER:-eqdmc/security}"
+    gh issue create -R "$_rax_fb_repo" \
+      --title "[rax-feedback] $_rax_fb_label: ${_rax_fb_purpose:0:60}" \
+      --label "agent-work,rax-feedback,rating:$_rax_fb_label" \
+      --body "## rax feedback\n\n**Action:** \`$_rax_fb_action_id\`\n**Rating:** $_rax_fb_label\n**Purpose:** $_rax_fb_purpose\n\n**Note:** ${_rax_fb_note:-}\n\n---\n*Auto-submitted by rax*" 2>&1 | sed 's/^/  /'
+  fi
+  printf "\n  ${GREEN}${CHECK} Feedback submitted — thank you${RESET}\n"
+fi
+
+unset _rax_fb_rating _rax_fb_label _rax_fb_note _rax_fb_action_id _rax_fb_purpose _rax_fb_repo
+
 # ─── NEXT STEPS ───
 echo ""
 printf "${WHITE}───── NEXT STEPS ──────────────────────────────────────────${RESET}\n"
