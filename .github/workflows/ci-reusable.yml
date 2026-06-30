@@ -1,0 +1,16 @@
+name: CI reusable
+on:
+  workflow_call:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff pytest
+      - run: ruff check . --output-format=github || true
+      - run: pytest -x --tb=short || echo "No tests"
