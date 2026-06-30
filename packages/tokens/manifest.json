@@ -1,8 +1,8 @@
 {
   "$schema": "https://eqdmc.github.io/schemas/token-manifest-v1.json",
   "version": "1",
-  "updated_at": "2026-06-30T10:00:00Z",
-  "updated_by": "rax-2026-06-29-hardening-sprint-001",
+  "updated_at": "2026-06-30T10:30:00Z",
+  "updated_by": "agent (post-hardening audit)",
   "description": "SSOT for all tokens and credentials. Every token has a type, permissions, scope, and usage tracking. Agents query this manifest \u2014 never hardcode token values.",
   "tokens": [
     {
@@ -21,8 +21,7 @@
       "permissions": {
         "model": "fine-grained",
         "repositories": [
-          "eqdmc/security",
-          "eqdmc/dotfiles"
+          "eqdmc/security"
         ],
         "contents": "write",
         "pull_requests": "write",
@@ -32,19 +31,18 @@
           "admin:public_key",
           "workflow",
           "gist"
-        ]
+        ],
+        "missing_repos": [
+          "eqdmc/dotfiles",
+          "eqdmc/agent-harness",
+          "eqdmc/infra"
+        ],
+        "issues": "read"
       },
       "usage": [
         {
           "function": "gh CLI \u2014 all authenticated operations",
           "repo": "eqdmc/security",
-          "config_ref": "~/.config/gh/hosts.yml",
-          "placeholder": "$GH_TOKEN",
-          "machine": "asahi"
-        },
-        {
-          "function": "gh CLI \u2014 all authenticated operations",
-          "repo": "eqdmc/dotfiles",
           "config_ref": "~/.config/gh/hosts.yml",
           "placeholder": "$GH_TOKEN",
           "machine": "asahi"
@@ -54,10 +52,11 @@
         "created_by": "human (via rax hardening sprint)",
         "creation_url": "https://github.com/settings/tokens?type=beta",
         "previous_token_id": "legacy-repo-scoped-pat (revoked)",
-        "previous_token_scopes": "admin:ssh_signing_key, admin:public_key, gist, read:org, repo, workflow"
+        "previous_token_scopes": "admin:ssh_signing_key, admin:public_key, gist, read:org, repo, workflow",
+        "scope_gap": "Token scoped to eqdmc/security only. Cannot create PRs or push to dotfiles, agent-harness, or infra repos."
       },
       "status": "active",
-      "notes": "Replaced legacy PAT with fine-grained token. admin:ssh_signing_key removed \u2014 agent can no longer mint signing keys.",
+      "notes": "Fine-grained PAT scoped to eqdmc/security only. admin:ssh_signing_key removed. Cannot access dotfiles or agent-harness.",
       "_synced_github_login": "eqdmc-admin",
       "_synced_github_id": 241564258,
       "_synced_at": "2026-06-30T10:59:31.682987+00:00"
