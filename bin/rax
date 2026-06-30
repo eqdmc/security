@@ -61,23 +61,20 @@ fi
 # --- Paths (all env-var driven, sensible defaults) ---
 RAX_STATE_DIR="${RAX_STATE_DIR:-$HOME/.rax/state}"
 
-# Resolve pending action: RAX_PENDING_FILE > numbered arg > default single file > auto-detect
+# Resolve pending action: RAX_PENDING_FILE > numbered arg > numbered dir > single file
 if [ -n "${RAX_PENDING_FILE:-}" ]; then
     ACTION="$RAX_PENDING_FILE"
 elif [ -n "$RAX_CMD" ] && [ "$RAX_CMD" -eq "$RAX_CMD" ] 2>/dev/null; then
     ACTION="$RAX_PENDING_DIR/$RAX_CMD.sh"
     mkdir -p "$RAX_PENDING_DIR"
+elif [ -d "$RAX_PENDING_DIR" ] && ls "$RAX_PENDING_DIR"/[0-9]*.sh >/dev/null 2>&1; then
+    first=$(ls "$RAX_PENDING_DIR"/[0-9]*.sh 2>/dev/null | sort | head -1)
+    ACTION="$first"
 elif [ -f "$HOME/.rax/pending.sh" ]; then
     ACTION="$HOME/.rax/pending.sh"
-elif [ -d "$RAX_PENDING_DIR" ]; then
-    first=$(ls "$RAX_PENDING_DIR"/[0-9]*.sh 2>/dev/null | sort | head -1)
-    if [ -n "$first" ]; then
-        ACTION="$first"
-    else
-        ACTION="$HOME/.rax/pending.sh"
-    fi
 else
-    ACTION="$HOME/.rax/pending.sh"
+    echo "No pending actions. Stage one with: rax list"
+    exit 0
 fi
 
 RESULT_FILE="${RAX_RESULT_FILE:-$RAX_STATE_DIR/last-result.json}"
