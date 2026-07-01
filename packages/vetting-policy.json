@@ -93,6 +93,36 @@
     "todo_priority": "P0",
     "todo": "User must create a new fine-grained token at https://github.com/settings/tokens with minimal scopes (repo: eqdmc/security + eqdmc/dotfiles, no admin:ssh_signing_key). Then replace ~/.config/gh/hosts.yml. Keep old token until new one is verified."
   },
+  "scoring": {
+    "criteria": [
+      {"id": "license_fit",       "weight": 20, "max": 20, "description": "License compatibility with policy"},
+      {"id": "maintenance",       "weight": 20, "max": 20, "description": "Recent releases, active dev, issue response"},
+      {"id": "community",         "weight": 15, "max": 15, "description": "GitHub stars, contributors, ecosystem adoption"},
+      {"id": "security",          "weight": 15, "max": 15, "description": "CVE history, audit trail, vulnerability reporting"},
+      {"id": "features_fit",      "weight": 15, "max": 15, "description": "How well features match the use case"},
+      {"id": "performance",       "weight": 10, "max": 10, "description": "Speed, resource usage, reliability"},
+      {"id": "ecosystem",         "weight": 5,  "max": 5,  "description": "Integration with our stack (Fedora, btrfs, systemd)"}
+    ],
+    "license_categories": {
+      "permissive":     {"keywords": ["mit", "apache", "bsd", "isc", "unlicense", "cc0", "mpl"],   "score": 20},
+      "weak_copyleft":  {"keywords": ["lgpl"],                                                      "score": 10},
+      "strong_copyleft":{"keywords": ["gpl", "agpl", "eclipse"],                                    "score": 0}
+    },
+    "star_thresholds": [
+      {"min": 10000, "score": 15},
+      {"min": 5000,  "score": 13},
+      {"min": 1000,  "score": 10},
+      {"min": 100,   "score": 7},
+      {"min": 10,    "score": 4},
+      {"min": 0,     "score": 1}
+    ],
+    "maintenance_days": [
+      {"max_days": 30,   "score": 10},
+      {"max_days": 90,   "score": 8},
+      {"max_days": 365,  "score": 5},
+      {"max_days": null, "score": 1}
+    ]
+  },
   "containment": {
     "level": "tripwire",
     "description": "This system prevents honest-mistake installs and provides an audit trail. It does NOT contain a compromised agent, because the agent holds the credentials (gh token with repo+admin:ssh_signing_key scopes) and exec capability that would be needed to forge approvals.",
