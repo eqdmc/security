@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# gh-session-auth — Authenticate at session start, auto-refresh in background.
+#
+# Run this at the start of every agent session:
+#   source gh-session-auth
+#
+# This ensures gh CLI is authenticated as eqdmc-agent-bots for the entire
+# session. The token expires in 1 hour but this script sets up a background
+# refresh loop that re-authenticates before expiry.
+#
+# Usage:
+#   gh-session-auth          # authenticate + background refresh
+#   gh-session-auth --check  # check if still authenticated
+#   gh-session-auth --stop   # stop background refresh
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+AUTH_PID_FILE="/tmp/gh-auth-refresh.pid"
+CLIENT_ID="${GH_APP_CLIENT_ID:-Iv23lia83jBPuXt5WMfD}"
+INSTALL_ID="${GH_APP_INSTALL_ID:-143517448}"
+AUTH_SCRIPT="$SCRIPT_DIR/bin/gh-app-auth"
+
+if [ ! -f "$AUTH_SCRIPT" ]; then
+    AUTH_SCRIPT="$SCRIPT_DIR/../security/bin/gh-app-auth"
+fi
+
+case "${1:-}" in
+    --check)
+        # Test access via repo endpoint (works for installation tokens)
+        if gh api repos/eqdmc/security 2>/dev/null | jq -e '.name' >/dev/null 2>&1; then
+            echo "✅ Authenticated"
+            exit 0
+        else
+            echo "❌ Not authenticated"
+            exit 1
+        fi
+        ;;
+    --stop)
+        if [ -f "$AUTH_PID_FILE" ]; then
+            kill "$(cat "$AUTH_PID_FILE")" 2>/dev/null || true
+            rm -f "$AUTH_PID_FILE"
+            echo "Background refresh stopped"
+        fi
+        return 0 2>/dev/null || exit 0
+        ;;
+esac
+
+echo "Authenticating as eqdmc-agent-bots..."
+bash "$AUTH_SCRIPT" --client-id "$CLIENT_ID" --install-id "$INSTALL_ID" 2>&1 | tail -1
+
+# Background refresh loop — re-authenticates every 50 minutes (3000 seconds)
+# Runs in a subshell so it doesn't block the session
+(
+    while true; do
+        sleep 3000  # 50 minutes
+        bash "$AUTH_SCRIPT" --client-id "$CLIENT_ID" --install-id "$INSTALL_ID" \
+            2>/dev/null | tail -1
+    done
+) &
+disown
+echo "$!" > "$AUTH_PID_FILE"
+echo "Background auth refresh started (PID: $(cat "$AUTH_PID_FILE"))"
