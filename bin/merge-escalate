@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""merge-escalate — Detect stuck PRs and escalate to human via rax/merge.
+
+A PR is considered stuck when:
+  - All CI checks pass ✅
+  - No merge conflicts ✅
+  - But not merged after 30+ minutes ⏳
+  - Or blocked by self-approval 🔄
+
+When detected, creates a rax/merge action for human intervention.
+The human runs `rax` to see the stuck PR and can approve directly.
+
+Usage:
+  merge-escalate [--repo <repo>] [--timeout 30]
+  merge-escalate --check <pr>  # check a specific PR
+  merge-escalate --all         # check all repos
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO = Path(__file__).parent.parent
+DEFAULT_REPO = "eqdmc/security"
+RAX_PENDING_DIR = Path.home() / ".rax" / "pending"
+RAX_PENDING_DIR.mkdir(parents=True, exist_ok=True)
+
+# Time in minutes before a PR is considered stuck
+STUCK_TIMEOUT_MINUTES = 30
+
+
+def gh_api(path, repo=DEFAULT_REPO):
+    try:
+        r = subprocess.run(
+            ["gh", "api", f"repos/{repo}/{path}"],
+            capture_output=True, text=True, timeout=15
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return json.loads(r.stdout)
+        return None
+    except:
+        return None
+
+
+def check_pr(pr_num, repo):
+    """Check if a PR is stuck. Returns reason if stuck, None otherwise."""
+    result = subprocess.run(
+        ["gh", "pr", "view", str(pr_num), "-R", repo,
+         "--json", "number,title,state,closed,mergeable,mergeStateStatus,createdAt,statusCheckRollup,author,reviewDecision,additions,deletions",
+         "--jq", "."],
+        capture_output=True, text=True, timeout=15
+    )
+    if result.returncode != 0:
+        return None
+    
+    pr = json.loads(result.stdout)
+    
+    if pr.get("closed"):
+        return None  # Already merged/closed
+    
+    merge_state = pr.get("mergeStateStatus", "UNKNOWN")
+    mergeable = pr.get("mergeable", "UNKNOWN")
+    created_str = pr.get("createdAt", "")
+    review_decision = pr.get("reviewDecision", "")
+    author = pr.get("author", {}).get("login", "unknown")
+    
+    # Check age
+    age_minutes = 0
+    if created_str:
+        created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+        age_minutes = (datetime.now(timezone.utc) - created).total_seconds() / 60
+    
+    # Gather CI status
+    checks = pr.get("statusCheckRollup", [])
+    failures = [c for c in checks if c.get("conclusion") == "FAILURE"]
+    passing = [c for c in checks if c.get("conclusion") == "SUCCESS"]
+    
+    # Determine why stuck
+    reasons = []
+    
+    if merge_state in ("DIRTY", "DRY"):
+        reasons.append("merge conflict")
+    elif failures:
+        reasons.append(f"{len(failures)} CI failure(s)")
+    elif merge_state == "BLOCKED" and (age_minutes > STUCK_TIMEOUT_MINUTES or "--force" in sys.argv):
+        if review_decision == "REVIEW_REQUIRED":
+            if "agent-bots" in author or "merge-bot" in author:
+                reasons.append("self-approval (app created PR)")
+            else:
+                reasons.append("needs human review")
+        elif review_decision == "APPROVED":
+            reasons.append("approved but merge queue stuck")
+        else:
+            reasons.append(f"blocked (state: {merge_state})")
+    elif merge_state == "BLOCKED":
+        pass  # Too young to escalate
+    
+    if not reasons:
+        return None
+    
+    return {
+        "pr": pr_num,
+        "repo": repo,
+        "title": pr.get("title", "")[:80],
+        "author": author,
+        "age_minutes": int(age_minutes),
+        "reasons": reasons,
+        "checks": {"pass": len(passing), "fail": len(failures)},
+        "additions": pr.get("additions", 0),
+        "deletions": pr.get("deletions", 0),
+    }
+
+
+def create_rax_action(stuck_pr, repo):
+    """Create a rax/merge action for a stuck PR."""
+    pr = stuck_pr["pr"]
+    age = stuck_pr["age_minutes"]
+    reasons = ", ".join(stuck_pr["reasons"])
+    title = stuck_pr["title"]
+    checks = stuck_pr["checks"]
+    
+    action_file = RAX_PENDING_DIR / "1.sh"
+    
+    # Check if action already exists for this PR
+    if action_file.exists():
+        content = action_file.read_text()
+        if f"PR #{pr}" in content:
+            print(f"  ⏭️  Rax action already exists for PR #{pr}")
+            return
+    
+    action_file.write_text(f"""#!/bin/bash
+# Purpose: ESCALATION — Merge PR #{pr} ({repo})
+# Priority: P0
+# Type: merge/escalation
+# Description: PR #{pr} is stuck ({reasons}). Created by merge-escalate after {age}min.
+# Issue: {pr}
+# Action-ID: rax-escalate-{pr}-{int(time.time())}
+# Repo: {repo}
+set -euo pipefail
+
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+echo "  ESCALATION — Merge PR #{pr}"
+echo "═══════════════════════════════════════════════════════════════"
+echo ""
+echo "  Title:    {title}"
+echo "  Author:   {stuck_pr['author']}"
+echo "  Changes:  +{stuck_pr['additions']}/-{stuck_pr['deletions']}"
+echo "  Stuck:    {age} minutes"
+echo "  Reason:   {reasons}"
+echo "  Checks:   {checks['pass']} pass, {checks['fail']} fail"
+echo ""
+echo "  To approve: gh pr review {pr} -R {repo} --approve"
+echo "  To merge:   gh pr merge {pr} -R {repo} --squash"
+echo ""
+read -p "  Approve and merge? (y/n) " -r ANS
+echo ""
+
+if [ "$ANS" = "y" ]; then
+  echo "  Approving..."
+  gh pr review {pr} -R {repo} --approve 2>&1 | sed 's/^/  /'
+  echo "  Merging..."
+  gh pr merge {pr} -R {repo} --squash 2>&1 | sed 's/^/  /'
+  echo ""
+  echo "  ✅ PR #{pr} merged."
+else
+  echo "  ❌ Escalation skipped."
+fi
+""")
+    action_file.chmod(0o600)
+    print(f"  🚨 Rax escalation created: PR #{pr} ({reasons})")
+    print(f"     Run: rax")
+
+
+def scan_repo(repo):
+    """Scan all open PRs in a repo for stuck ones."""
+    result = subprocess.run(
+        ["gh", "pr", "list", "-R", repo, "--state", "open", "--json", "number",
+         "--jq", ".[].number"],
+        capture_output=True, text=True, timeout=15
+    )
+    if result.returncode != 0:
+        print(f"  Error scanning {repo}: {result.stderr[:100]}")
+        return []
+    
+    prs = [int(p) for p in result.stdout.strip().split("\n") if p.strip()]
+    stuck = []
+    
+    for pr_num in prs:
+        info = check_pr(pr_num, repo)
+        if info:
+            stuck.append(info)
+            create_rax_action(info, repo)
+    
+    return stuck
+
+
+def check_specific_pr(pr_num, repo):
+    """Check a specific PR and escalate if stuck."""
+    info = check_pr(pr_num, repo)
+    if info:
+        print(f"❌ PR #{pr_num} is STUCK — {', '.join(info['reasons'])}")
+        create_rax_action(info, repo)
+    else:
+        print(f"✅ PR #{pr_num} is not stuck (or too young)")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+    
+    cmd = sys.argv[1]
+    
+    if cmd == "--check":
+        pr = int(sys.argv[2])
+        repo = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_REPO
+        check_specific_pr(pr, repo)
+    
+    elif cmd == "--all":
+        repos = [DEFAULT_REPO, "eqdmc/dotfiles", "eqdmc/agent-harness", "eqdmc/infra"]
+        for i, a in enumerate(sys.argv):
+            if a == "--repos" and i + 1 < len(sys.argv):
+                repos = sys.argv[i + 1].split(",")
+        
+        total_stuck = 0
+        for repo in repos:
+            print(f"\nScanning {repo}...")
+            stuck = scan_repo(repo)
+            total_stuck += len(stuck)
+            for s in stuck:
+                print(f"  ❌ #{s['pr']} — {', '.join(s['reasons'])}")
+        
+        print(f"\n{'='*50}")
+        if total_stuck > 0:
+            print(f"  🚨 {total_stuck} PR(s) need escalation. Run: rax")
+        else:
+            print(f"  ✅ No stuck PRs found")
+    
+    else:
+        # Default: scan default repo
+        scan_repo(cmd if cmd.isdigit() else DEFAULT_REPO)
+
+
+if __name__ == "__main__":
+    main()
