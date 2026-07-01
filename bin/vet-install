@@ -19,6 +19,10 @@ source "$SCRIPT_DIR/lib/common.sh"
 SECURITY_REPO="$SCRIPT_DIR"
 DOTFILES_REPO="$(cd "$SCRIPT_DIR/../dotfiles" && pwd 2>/dev/null || echo "$HOME/.config/eqdmc/dotfiles")"
 
+MODE="install"
+PKG=""
+VER=""
+ECO="auto"
 SKIP_RAX=false
 FORCE=false
 
@@ -55,7 +59,6 @@ fi
 if [ "$verdict" != "APPROVED" ]; then
   if [ "$FORCE" = "true" ]; then
     echo "  ⚠ Verdict: $verdict — OVERRIDDEN (--force)"
-    echo "  ║  Override reason: $*"
   else
     die "Verdict: $verdict — BLOCKED. Fix gate failures before installing."
   fi
