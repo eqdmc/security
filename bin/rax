@@ -14,7 +14,14 @@
 #   RAX_POLICY_FILE   — danger patterns + thresholds (YAML)
 set -euo pipefail
 
-_rax_path="$(realpath "$(command -v rax 2>/dev/null || echo "$0")" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")"
+# Clear shell hash cache so we always find the correct rax
+hash -r 2>/dev/null || true
+
+# Make globs predictable: nullglob so unmatched patterns expand to nothing
+shopt -s nullglob 2>/dev/null || true
+
+_rax_which="$(command -v rax 2>/dev/null || echo "")"
+_rax_path="$(realpath "${_rax_which:-$0}" 2>/dev/null || readlink -f "${_rax_which:-$0}" 2>/dev/null || echo "${_rax_which:-$0}")"
 _rax_bin="$(cd "$(dirname "$_rax_path")" && pwd)"
 _rax_repo="$(cd "$_rax_bin/.." && pwd)"
 source "$_rax_repo/lib/rax-config.sh"
@@ -61,49 +68,51 @@ fi
 # --- Paths (all env-var driven, sensible defaults) ---
 RAX_STATE_DIR="${RAX_STATE_DIR:-$HOME/.rax/state}"
 
-# Diagnostic: if there are files in the pending dir but we can't find them, warn
-if [ -d "$RAX_PENDING_DIR" ] && [ -z "${1:-}" ]; then
-    _file_count=$(ls "$RAX_PENDING_DIR"/[0-9]*.sh 2>/dev/null | wc -l)
-    if [ "$_file_count" -gt 0 ] && [ ! -f "$HOME/.rax/pending.sh" ]; then
-        : # Files exist and no old single-file — should be fine
-    fi
-    unset _file_count
-fi
-
-# Resolve pending action: RAX_PENDING_FILE > numbered arg > numbered dir > single file
+# Resolve pending action: RAX_PENDING_FILE > numbered arg > pending dir files > single file
 if [ -n "${RAX_PENDING_FILE:-}" ]; then
     ACTION="$RAX_PENDING_FILE"
 elif [ -n "$RAX_CMD" ] && [ "$RAX_CMD" -eq "$RAX_CMD" ] 2>/dev/null; then
     ACTION="$RAX_PENDING_DIR/$RAX_CMD.sh"
     mkdir -p "$RAX_PENDING_DIR"
-elif [ -d "$RAX_PENDING_DIR" ] && ls "$RAX_PENDING_DIR"/[0-9]*.sh >/dev/null 2>&1; then
-    pending_files=($(ls "$RAX_PENDING_DIR"/[0-9]*.sh 2>/dev/null | sort))
-    if [ ${#pending_files[@]} -eq 1 ]; then
-        ACTION="${pending_files[0]}"
+elif [ -d "$RAX_PENDING_DIR" ]; then
+    # Collect numbered .sh files using glob (not ls — more reliable with set -e)
+    _rax_files=("$RAX_PENDING_DIR"/[0-9]*.sh)
+    if [ ${#_rax_files[@]} -gt 0 ] && [ -f "${_rax_files[0]}" ]; then
+        IFS=$'\n' _rax_sorted=($(printf '%s\n' "${_rax_files[@]}" | sort))
+        if [ ${#_rax_sorted[@]} -eq 1 ]; then
+            ACTION="${_rax_sorted[0]}"
+        else
+            echo ""
+            echo "  Multiple actions staged:"
+            echo "  $(printf '%0.s─' {1..60})"
+            printf "  %-6s %-10s %s\n" "Num" "Age" "Purpose"
+            echo "  $(printf '%0.s─' {1..60})"
+            for f in "${_rax_sorted[@]}"; do
+                num=$(basename "$f" .sh)
+                purpose=$(grep -m1 '^# Purpose:' "$f" 2>/dev/null | sed 's/.*: *//' || echo "no purpose")
+                age_s=$(( $(date +%s) - $(stat -c '%Y' "$f" 2>/dev/null || echo 0) ))
+                if [ "$age_s" -lt 60 ]; then
+                    age_str="${age_s}s"
+                elif [ "$age_s" -lt 3600 ]; then
+                    age_str="$((age_s / 60))m"
+                else
+                    age_str="$((age_s / 3600))h"
+                fi
+                printf "  %-6s %-10s %s\n" "$num" "$age_str" "$purpose"
+            done
+            echo "  $(printf '%0.s─' {1..60})"
+            echo "  Run: rax <number>"
+            echo ""
+            exit 0
+        fi
+        unset IFS _rax_sorted
+    elif [ -f "$HOME/.rax/pending.sh" ]; then
+        ACTION="$HOME/.rax/pending.sh"
     else
-        echo ""
-        echo "  Multiple actions staged:"
-        echo "  $(printf '%0.s─' {1..60})"
-        printf "  %-6s %-10s %s\n" "Num" "Age" "Purpose"
-        echo "  $(printf '%0.s─' {1..60})"
-        for f in "${pending_files[@]}"; do
-            num=$(basename "$f" .sh)
-            purpose=$(grep -m1 '^# Purpose:' "$f" 2>/dev/null | sed 's/.*: *//' || echo "no purpose")
-            age_s=$(( $(date +%s) - $(stat -c '%Y' "$f" 2>/dev/null || echo 0) ))
-            if [ "$age_s" -lt 60 ]; then
-                age_str="${age_s}s"
-            elif [ "$age_s" -lt 3600 ]; then
-                age_str="$((age_s / 60))m"
-            else
-                age_str="$((age_s / 3600))h"
-            fi
-            printf "  %-6s %-10s %s\n" "$num" "$age_str" "$purpose"
-        done
-        echo "  $(printf '%0.s─' {1..60})"
-        echo "  Run: rax <number>"
-        echo ""
+        echo "No pending actions. Stage one with: rax list"
         exit 0
     fi
+    unset _rax_files
 elif [ -f "$HOME/.rax/pending.sh" ]; then
     ACTION="$HOME/.rax/pending.sh"
 else
@@ -120,6 +129,11 @@ mkdir -p "$RAX_STATE_DIR"
 
 if [ ! -f "$ACTION" ]; then
     echo "No pending action."
+    echo "  (Looked at: ${ACTION:-<not resolved>})" >&2
+    echo "  (Pending dir: $RAX_PENDING_DIR)" >&2
+    echo "  (RAX_CMD: '${RAX_CMD:-}')" >&2
+    echo "  (Files in pending dir: $(ls "$RAX_PENDING_DIR"/[0-9]*.sh 2>/dev/null | tr '\n' ' ' || echo '<none>'))" >&2
+    echo "  (rax path: $_rax_path)" >&2
     exit 0
 fi
 
