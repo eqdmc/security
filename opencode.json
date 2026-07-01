@@ -106,6 +106,7 @@
     "../eqdmc/agent-harness/ENVIRONMENT.md",
     "../eqdmc/agent-harness/HARNESS.md",
     "AGENTS.md",
-    ".opencode/instructions/rax-check.md"
+    ".opencode/instructions/rax-check.md",
+    ".opencode/instructions/gh-access.md"
   ]
 }
