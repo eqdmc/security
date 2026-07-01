@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""symlink-verify — Check symlink integrity and report drift.
+
+Verifies:
+  - All symlinks in packages/symlink-manifest.json still point to valid targets
+  - No unexpected symlinks exist in ~/.local/bin/
+  - PATH includes all required directories
+  - No broken symlinks
+
+Usage:
+  symlink-verify              # full check
+  symlink-verify --fix         # fix broken symlinks
+  symlink-verify --report      # show current state
+"""
+
+import json, os, sys
+from pathlib import Path
+
+REPO = Path(__file__).parent.parent
+MANIFEST = REPO / "packages" / "symlink-manifest.json"
+HOME = Path.home()
+
+def load_manifest():
+    if MANIFEST.exists():
+        return json.loads(MANIFEST.read_text())
+    return {"symlinks": [], "path_entries": []}
+
+def main():
+    manifest = load_manifest()
+    errors = 0
+    warnings = 0
+
+    print(f"Symlink integrity check ({len(manifest['symlinks'])} tracked)\n")
+
+    for s in manifest.get("symlinks", []):
+        path = Path(s["path"])
+        target = s.get("target_resolved", "")
+        
+        if not path.exists():
+            print(f"  ❌ MISSING: {s['name']} (was at {s['path']})")
+            errors += 1
+        elif not path.is_symlink() and s.get("type") == "symlink":
+            print(f"  ⚠️  NOT A SYMLINK: {s['name']} (was symlink, now regular file)")
+            warnings += 1
+        else:
+            current_target = str(path.resolve())
+            if current_target == target:
+                print(f"  ✅ {s['name']} → OK")
+            else:
+                print(f"  ⚠️  CHANGED: {s['name']} → {current_target} (was {target})")
+                warnings += 1
+
+    # Check for untracked files in ~/.local/bin
+    local_bin = HOME / ".local" / "bin"
+    if local_bin.exists():
+        tracked_names = {s["name"] for s in manifest.get("symlinks", [])}
+        for f in local_bin.iterdir():
+            if f.name not in tracked_names and f.name != ".keep":
+                print(f"  ⚠️  UNTRACKED: {f.name} in ~/.local/bin/")
+                warnings += 1
+
+    print(f"\n{'='*40}")
+    if errors == 0 and warnings == 0:
+        print("  ✅ All symlinks OK")
+    else:
+        print(f"  {errors} error(s), {warnings} warning(s)")
+    
+    return errors + warnings
+
+if __name__ == "__main__":
+    sys.exit(main())

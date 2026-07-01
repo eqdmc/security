@@ -1,0 +1,17 @@
+# Auto-escalation — checks for stuck PRs every 30 minutes.
+# Creates rax/merge escalation actions when PRs are blocked.
+name: merge-escalation
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # every 30 minutes
+  workflow_dispatch:  # manual trigger
+
+jobs:
+  escalate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for stuck PRs
+        run: |
+          pip install -q PyGithub 2>/dev/null || true
+          python3 bin/merge-escalate --all --repo eqdmc/security

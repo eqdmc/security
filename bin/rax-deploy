@@ -178,6 +178,9 @@ except ImportError:
   fi
 fi
 
+# Refresh shell hash so symlinks take effect immediately
+hash -r 2>/dev/null || rehash 2>/dev/null || true
+
 echo ""
 echo "=== Deploy complete ==="
 echo ""

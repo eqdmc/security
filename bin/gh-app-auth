@@ -91,8 +91,19 @@ if [ "${OUTPUT_MODE:-}" = "env" ]; then
     exit 0
 fi
 
-# Configure gh CLI via keyring as fallback
-echo "$TOKEN" | gh auth login -p https -h github.com --with-token 2>/dev/null || true
+# Configure gh CLI — try keyring first, fall back to hosts.yml write
+if ! echo "$TOKEN" | gh auth login -p https -h github.com --with-token 2>/dev/null; then
+    # Keyring unavailable (Linux without secret service). Write hosts.yml directly.
+    HOSTS_FILE="${HOME}/.config/gh/hosts.yml"
+    mkdir -p "$(dirname "$HOSTS_FILE")"
+    cat > "$HOSTS_FILE" << HOSTSEOF
+github.com:
+    git_protocol: https
+    oauth_token: $TOKEN
+    user: eqdmc-agent-bots[bot]
+HOSTSEOF
+    chmod 600 "$HOSTS_FILE"
+fi
 
 echo "✅ Authenticated as eqdmc-agent-bots installation"
 echo "   Token expires: $EXPIRES"
