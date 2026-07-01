@@ -1,0 +1,76 @@
+# Auto-review — runs on every PR, posts binary checklist + automated findings.
+name: auto-review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  pull-requests: write
+  checks: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auto-review
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body "## 🤖 Auto-Review in progress...
+
+          Running automated review checks. Results will appear shortly."
+
+      - name: Run checklist
+        id: checklist
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+
+          echo "### Binary Checklist" > /tmp/review.md
+          echo "" >> /tmp/review.md
+
+          # CI status
+          CHECKS=$(gh pr view $PR -R $REPO --json statusCheckRollup --jq '.statusCheckRollup')
+          FAILS=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE")] | length')
+          PASS=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "SUCCESS")] | length')
+          if [ "$FAILS" -gt 0 ]; then
+            echo "| ❌ CI checks     | $FAILS failing, $PASS passing |" >> /tmp/review.md
+          else
+            echo "| ✅ CI checks     | $PASS passing |" >> /tmp/review.md
+          fi
+
+          # Conflicts
+          MERGE=$(gh pr view $PR -R $REPO --json mergeable --jq '.mergeable')
+          if [ "$MERGE" = "MERGEABLE" ]; then
+            echo "| ✅ No conflicts  | Branch is up to date |" >> /tmp/review.md
+          else
+            echo "| ❌ Conflicts     | Branch has conflicts ($MERGE) |" >> /tmp/review.md
+          fi
+
+          # Review required
+          REVIEW=$(gh pr view $PR -R $REPO --json reviewDecision --jq '.reviewDecision')
+          if [ "$REVIEW" = "APPROVED" ]; then
+            echo "| ✅ Review        | Approved |" >> /tmp/review.md
+          elif [ "$REVIEW" = "CHANGES_REQUESTED" ]; then
+            echo "| ❌ Review        | Changes requested |" >> /tmp/review.md
+          else
+            echo "| ⏳ Review        | $REVIEW |" >> /tmp/review.md
+          fi
+
+          # Size
+          ADD=$(gh pr view $PR -R $REPO --json additions --jq '.additions')
+          if [ "$ADD" -gt 1000 ]; then
+            echo "| ⚠️  Size         | +$ADD lines — large PR |" >> /tmp/review.md
+          else
+            echo "| ✅ Size          | +$ADD lines |" >> /tmp/review.md
+          fi
+
+          cat /tmp/review.md
+
+      - name: Post review comment
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body-file /tmp/review.md
