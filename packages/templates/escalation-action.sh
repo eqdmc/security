@@ -1,8 +1,3 @@
-#!/bin/bash
-# rax/merge escalation template — colors via ANSI escape codes
-# Variables substituted by merge-escalate: {pr}, {repo}, {title}, etc.
-set -euo pipefail
-
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33m'
 C='\033[0;36m'; M='\033[0;35m'; B='\033[1m'; X='\033[0m'
 
