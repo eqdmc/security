@@ -77,6 +77,7 @@ elif [ -n "$RAX_CMD" ] && [ "$RAX_CMD" -eq "$RAX_CMD" ] 2>/dev/null; then
 elif [ -d "$RAX_PENDING_DIR" ]; then
     # Collect numbered .sh files using glob (not ls — more reliable with set -e)
     _rax_files=("$RAX_PENDING_DIR"/[0-9]*.sh)
+    if [ -n "${RAX_DEBUG:-}" ]; then echo "RAX_DEBUG: dir=$RAX_PENDING_DIR files=${#_rax_files[@]} first=${_rax_files[0]:-}" >&2; fi
     if [ ${#_rax_files[@]} -gt 0 ] && [ -f "${_rax_files[0]}" ]; then
         IFS=$'\n' _rax_sorted=($(printf '%s\n' "${_rax_files[@]}" | sort))
         if [ ${#_rax_sorted[@]} -eq 1 ]; then
@@ -106,15 +107,11 @@ elif [ -d "$RAX_PENDING_DIR" ]; then
             exit 0
         fi
         unset IFS _rax_sorted
-    elif [ -f "$HOME/.rax/pending.sh" ]; then
-        ACTION="$HOME/.rax/pending.sh"
     else
         echo "No pending actions. Stage one with: rax list"
         exit 0
     fi
     unset _rax_files
-elif [ -f "$HOME/.rax/pending.sh" ]; then
-    ACTION="$HOME/.rax/pending.sh"
 else
     echo "No pending actions. Stage one with: rax list"
     exit 0
