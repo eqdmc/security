@@ -68,8 +68,33 @@ elif [ -n "$RAX_CMD" ] && [ "$RAX_CMD" -eq "$RAX_CMD" ] 2>/dev/null; then
     ACTION="$RAX_PENDING_DIR/$RAX_CMD.sh"
     mkdir -p "$RAX_PENDING_DIR"
 elif [ -d "$RAX_PENDING_DIR" ] && ls "$RAX_PENDING_DIR"/[0-9]*.sh >/dev/null 2>&1; then
-    first=$(ls "$RAX_PENDING_DIR"/[0-9]*.sh 2>/dev/null | sort | head -1)
-    ACTION="$first"
+    pending_files=($(ls "$RAX_PENDING_DIR"/[0-9]*.sh 2>/dev/null | sort))
+    if [ ${#pending_files[@]} -eq 1 ]; then
+        ACTION="${pending_files[0]}"
+    else
+        echo ""
+        echo "  Multiple actions staged:"
+        echo "  $(printf '%0.s─' {1..60})"
+        printf "  %-6s %-10s %s\n" "Num" "Age" "Purpose"
+        echo "  $(printf '%0.s─' {1..60})"
+        for f in "${pending_files[@]}"; do
+            num=$(basename "$f" .sh)
+            purpose=$(grep -m1 '^# Purpose:' "$f" 2>/dev/null | sed 's/.*: *//' || echo "no purpose")
+            age_s=$(( $(date +%s) - $(stat -c '%Y' "$f" 2>/dev/null || echo 0) ))
+            if [ "$age_s" -lt 60 ]; then
+                age_str="${age_s}s"
+            elif [ "$age_s" -lt 3600 ]; then
+                age_str="$((age_s / 60))m"
+            else
+                age_str="$((age_s / 3600))h"
+            fi
+            printf "  %-6s %-10s %s\n" "$num" "$age_str" "$purpose"
+        done
+        echo "  $(printf '%0.s─' {1..60})"
+        echo "  Run: rax <number>"
+        echo ""
+        exit 0
+    fi
 elif [ -f "$HOME/.rax/pending.sh" ]; then
     ACTION="$HOME/.rax/pending.sh"
 else
