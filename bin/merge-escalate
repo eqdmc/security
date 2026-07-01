@@ -32,6 +32,18 @@ RAX_PENDING_DIR.mkdir(parents=True, exist_ok=True)
 # Time in minutes before a PR is considered stuck
 STUCK_TIMEOUT_MINUTES = 30
 
+# Check authentication — if wrapper blocks us, get token proactively
+import os
+if not os.environ.get("GH_TOKEN"):
+    import subprocess as _sp
+    _r = _sp.run(["gh", "api", "repos/eqdmc/security", "--jq", ".name"],
+                 capture_output=True, text=True, timeout=10)
+    if _r.returncode != 0:
+        print("❌ gh not authenticated. Run: gh-session-auth", file=sys.stderr)
+        sys.exit(1)
+
+FORCE_MODE = "--force" in sys.argv
+
 
 def gh_api(path, repo=DEFAULT_REPO):
     try:
@@ -218,7 +230,12 @@ def main():
     
     if cmd == "--check":
         pr = int(sys.argv[2])
-        repo = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_REPO
+        # Skip --force in argument position (it's handled by FORCE_MODE)
+        repo = DEFAULT_REPO
+        for i, a in enumerate(sys.argv[3:], 3):
+            if not a.startswith("--"):
+                repo = a
+                break
         check_specific_pr(pr, repo)
     
     elif cmd == "--all":
