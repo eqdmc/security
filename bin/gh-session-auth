@@ -47,7 +47,10 @@ case "${1:-}" in
 esac
 
 echo "Authenticating as eqdmc-agent-bots..."
-bash "$AUTH_SCRIPT" --client-id "$CLIENT_ID" --install-id "$INSTALL_ID" 2>&1 | tail -1
+# Source the auth script so GH_TOKEN is exported to the current shell
+source /dev/stdin <<< "$(bash "$AUTH_SCRIPT" --client-id "$CLIENT_ID" --install-id "$INSTALL_ID" --env 2>/dev/null)"
+# Also store via gh auth login as fallback
+bash "$AUTH_SCRIPT" --client-id "$CLIENT_ID" --install-id "$INSTALL_ID" 2>/dev/null | tail -1
 
 # Background refresh loop — re-authenticates every 50 minutes (3000 seconds)
 # Runs in a subshell so it doesn't block the session

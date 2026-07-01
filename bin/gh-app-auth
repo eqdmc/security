@@ -21,8 +21,9 @@ while [ $# -gt 0 ]; do
     --app-id) CLIENT_ID="$2"; shift 2 ;;  # accepts both
     --install-id|--install) INSTALL_ID="$2"; shift 2 ;;
     --key) KEY_FILE="$2"; shift 2 ;;
+    --env) OUTPUT_MODE="env"; shift ;;
     --help|-h)
-      echo "Usage: gh-app-auth --client-id CLIENT_ID --install-id INSTALL_ID [--key PATH]"
+      echo "Usage: gh-app-auth --client-id CLIENT_ID --install-id INSTALL_ID [--key PATH] [--env]"
       exit 0 ;;
     *) echo "Unknown: $1"; exit 1 ;;
   esac
@@ -80,8 +81,18 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
-# Configure gh CLI to use this token
-echo "$TOKEN" | gh auth login -p https -h github.com --with-token 2>/dev/null
+# Export token as environment variable (more reliable than keyring)
+export GH_TOKEN="$TOKEN"
+
+# If --env flag, just print the export line and exit (for sourcing)
+if [ "${OUTPUT_MODE:-}" = "env" ]; then
+    echo "export GH_TOKEN=$TOKEN"
+    echo "# Token expires: $EXPIRES"
+    exit 0
+fi
+
+# Configure gh CLI via keyring as fallback
+echo "$TOKEN" | gh auth login -p https -h github.com --with-token 2>/dev/null || true
 
 echo "✅ Authenticated as eqdmc-agent-bots installation"
 echo "   Token expires: $EXPIRES"

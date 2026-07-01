@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# gh-wrapper — Binary enforcement: blocks gh CLI if not authenticated.
+# Installed at ~/.local/bin/gh, takes priority over /usr/bin/gh.
+# Checks GH_TOKEN env var (set by gh-app-auth / gh-session-auth).
+# This makes GitHub access enforcement BINARY and UNAVOIDABLE.
+set -euo pipefail
+
+REAL_GH="/usr/bin/gh"
+GH_TOKEN="${GH_TOKEN:-}"
+
+# Check 1: GH_TOKEN environment variable
+if [ -n "$GH_TOKEN" ]; then
+    exec env GH_TOKEN="$GH_TOKEN" "$REAL_GH" "$@"
+fi
+
+# Check 2: Try the keyring-based auth
+if "$REAL_GH" api repos/eqdmc/security --jq '.name' >/dev/null 2>&1; then
+    exec "$REAL_GH" "$@"
+fi
+
+# Not authenticated — block
+echo ""
+echo "  ───────────────────────────────────────────────────────"
+echo "  ❌  gh CLI is NOT AUTHENTICATED"
+echo ""
+echo "     Run: gh-session-auth"
+echo ""
+echo "     This authenticates as eqdmc-agent-bots for the session."
+echo "     The wrapper checks auth on every gh invocation."
+echo "  ───────────────────────────────────────────────────────"
+echo ""
+exit 1
