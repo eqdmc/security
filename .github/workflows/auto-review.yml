@@ -1,4 +1,5 @@
-# Auto-review — runs on every PR, posts binary checklist + automated findings.
+# Auto-review — runs on every PR, auto-merges if all binary checks pass.
+# Human review only for exceptions (security files, failures, large PRs).
 name: auto-review
 on:
   pull_request:
@@ -7,6 +8,7 @@ on:
 permissions:
   pull-requests: write
   checks: read
+  contents: write
 
 jobs:
   review:
@@ -14,21 +16,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Auto-review
-        run: |
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --repo ${{ github.repository }} \
-            --body "## 🤖 Auto-Review in progress...
-
-          Running automated review checks. Results will appear shortly."
-
-      - name: Run checklist
+      - name: Run binary checklist
         id: checklist
         run: |
           PR=${{ github.event.pull_request.number }}
           REPO=${{ github.repository }}
+          HAS_FAILURE=false
+          NEEDS_HUMAN=false
 
-          echo "### Binary Checklist" > /tmp/review.md
+          echo "### 🤖 Auto-Review: Binary Checklist" > /tmp/review.md
           echo "" >> /tmp/review.md
 
           # CI status
@@ -37,35 +33,55 @@ jobs:
           PASS=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "SUCCESS")] | length')
           if [ "$FAILS" -gt 0 ]; then
             echo "| ❌ CI checks     | $FAILS failing, $PASS passing |" >> /tmp/review.md
+            HAS_FAILURE=true
           else
             echo "| ✅ CI checks     | $PASS passing |" >> /tmp/review.md
           fi
 
           # Conflicts
-          MERGE=$(gh pr view $PR -R $REPO --json mergeable --jq '.mergeable')
-          if [ "$MERGE" = "MERGEABLE" ]; then
-            echo "| ✅ No conflicts  | Branch is up to date |" >> /tmp/review.md
+          MERGEABLE=$(gh pr view $PR -R $REPO --json mergeable --jq '.mergeable')
+          if [ "$MERGEABLE" != "MERGEABLE" ]; then
+            echo "| ❌ Conflicts     | Branch has conflicts |" >> /tmp/review.md
+            HAS_FAILURE=true
           else
-            echo "| ❌ Conflicts     | Branch has conflicts ($MERGE) |" >> /tmp/review.md
+            echo "| ✅ No conflicts  | Branch is mergeable |" >> /tmp/review.md
           fi
 
-          # Review required
-          REVIEW=$(gh pr view $PR -R $REPO --json reviewDecision --jq '.reviewDecision')
-          if [ "$REVIEW" = "APPROVED" ]; then
-            echo "| ✅ Review        | Approved |" >> /tmp/review.md
-          elif [ "$REVIEW" = "CHANGES_REQUESTED" ]; then
-            echo "| ❌ Review        | Changes requested |" >> /tmp/review.md
+          # Security-sensitive files
+          FILES=$(gh pr view $PR -R $REPO --json files --jq '[.files[]?.path] | join(",")')
+          SEC_FILES=$(echo "$FILES" | grep -cE "guard|secret|token|\.pem|\.key|AGENTS\.md|opencode\.json" 2>/dev/null || true)
+          if [ "$SEC_FILES" -gt 0 ]; then
+            echo "| 🔍 Security      | $SEC_FILES security-relevant file(s) changed |" >> /tmp/review.md
+            NEEDS_HUMAN=true
           else
-            echo "| ⏳ Review        | $REVIEW |" >> /tmp/review.md
+            echo "| ✅ No security   | No security-sensitive files |" >> /tmp/review.md
           fi
 
-          # Size
+          # PR size
           ADD=$(gh pr view $PR -R $REPO --json additions --jq '.additions')
           if [ "$ADD" -gt 1000 ]; then
-            echo "| ⚠️  Size         | +$ADD lines — large PR |" >> /tmp/review.md
+            echo "| ⚠️  Size         | +$ADD lines — large PR, human recommended |" >> /tmp/review.md
+            NEEDS_HUMAN=true
           else
             echo "| ✅ Size          | +$ADD lines |" >> /tmp/review.md
           fi
+
+          echo "" >> /tmp/review.md
+
+          # Decision
+          if [ "$HAS_FAILURE" = "true" ]; then
+            echo "**Decision: ❌ BLOCKED — fix failures above**" >> /tmp/review.md
+            echo "label=needs-fix" >> $GITHUB_OUTPUT
+          elif [ "$NEEDS_HUMAN" = "true" ]; then
+            echo "**Decision: 👤 Human review recommended**" >> /tmp/review.md
+            echo "label=needs-human-review" >> $GITHUB_OUTPUT
+          else
+            echo "**Decision: ✅ All checks pass — auto-merging**" >> /tmp/review.md
+            echo "label=auto-approve" >> $GITHUB_OUTPUT
+          fi
+
+          echo "failure=$HAS_FAILURE" >> $GITHUB_OUTPUT
+          echo "human=$NEEDS_HUMAN" >> $GITHUB_OUTPUT
 
           cat /tmp/review.md
 
@@ -74,3 +90,17 @@ jobs:
           gh pr comment ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} \
             --body-file /tmp/review.md
+
+      - name: Add label
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} \
+            -R ${{ github.repository }} \
+            --add-label "${{ steps.checklist.outputs.label }}"
+
+      - name: Auto-approve and merge
+        if: steps.checklist.outputs.label == 'auto-approve'
+        run: |
+          gh pr review ${{ github.event.pull_request.number }} \
+            -R ${{ github.repository }} --approve
+          gh pr merge ${{ github.event.pull_request.number }} \
+            -R ${{ github.repository }} --squash
