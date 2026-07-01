@@ -1,0 +1,74 @@
+# auto-merge rules — git-managed config for automated PR approval and merge.
+# This file defines the binary conditions under which PRs are auto-merged
+# vs flagged for human review. All changes to this file require human review.
+#
+# Version: 1
+# Updated: 2026-07-01
+
+# ── Auto-approve conditions (ALL must pass for auto-merge) ──────────
+# If any condition is not met, the PR is flagged for human review.
+auto_approve:
+  # CI checks must have zero failures
+  ci_passing: true
+  
+  # PR must be mergeable (no conflicts)
+  no_conflicts: true
+  
+  # Max additions before human review is required
+  max_additions: 1000
+  
+  # Max files changed before human review
+  max_files_changed: 20
+
+  # Author is in the trusted list
+  trusted_authors:
+    - eqdmc-agent-bots
+    - app/eqdmc-agent-bots
+    - eqdmc-merge-bot
+    - app/eqdmc-merge-bot
+    - eqdmc-admin
+
+# ── Protected files — any change triggers human review ─────────────
+# These files are considered security-critical or config-critical.
+# Changes to these ALWAYS require human review, regardless of other checks.
+protected_files:
+  - "opencode.json"
+  - "opencode.jsonc"
+  - "packages/tokens/manifest.json"
+  - "packages/vetting-policy.json"
+  - "packages/auto-merge-rules.yaml"
+  - "packages/rax.yaml"
+  - "AGENTS.md"
+  - "guards/*"
+  - ".github/workflows/*"
+  - "*.pem"
+  - "*.key"
+  - "**/secret*"
+  - "**/credential*"
+
+# ── Security-sensitive patterns ────────────────────────────────────
+# Files matching these patterns trigger human review.
+security_patterns:
+  - "guard"
+  - "token"
+  - "secret"
+  - "credential"
+  - ".pem"
+  - ".key"
+
+# ── Labels applied by auto-review ──────────────────────────────────
+labels:
+  auto_approve: "auto-approve"
+  needs_human: "needs-human-review"
+  needs_fix: "needs-fix"
+
+# ── Merge settings ─────────────────────────────────────────────────
+merge:
+  method: "squash"  # squash, merge, rebase
+  delete_branch: true
+
+# ── Metrics ────────────────────────────────────────────────────────
+# Track outcomes to improve thresholds over time.
+metrics:
+  track_outcomes: true
+  review_interval_days: 30

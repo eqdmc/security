@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""auto-merge-rules — Read and evaluate auto-merge rules from config.
+Outputs config values for GitHub Actions and evaluates PRs against rules.
+
+Usage:
+  auto-merge-rules --get <key>           # get a config value
+  auto-merge-rules --check <pr-number>   # evaluate a PR against rules
+  auto-merge-rules --list                # show current rules
+"""
+
+import json
+import os
+import subprocess
+import sys
+import yaml
+from pathlib import Path
+
+REPO = Path(__file__).parent.parent
+CONFIG = REPO / "packages" / "auto-merge-rules.yaml"
+
+
+def load_rules():
+    with open(CONFIG) as f:
+        return yaml.safe_load(f)
+
+
+def gh_api(path, repo="eqdmc/security"):
+    r = subprocess.run(
+        ["gh", "api", f"repos/{repo}/{path}"],
+        capture_output=True, text=True, timeout=15
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        return json.loads(r.stdout)
+    return None
+
+
+def check_pr_against_rules(pr_num, repo="eqdmc/security"):
+    """Evaluate a PR against auto-merge rules. Returns (pass, reasons, label)."""
+    rules = load_rules()
+    auto = rules.get("auto_approve", {})
+    protected = rules.get("protected_files", [])
+    
+    results = []
+    failures = []
+    human_flags = []
+    
+    # Get PR data
+    pr_data = subprocess.run(
+        ["gh", "pr", "view", str(pr_num), "-R", repo,
+         "--json", "mergeable,additions,deletions,files,author,statusCheckRollup",
+         "--jq", "."],
+        capture_output=True, text=True, timeout=15
+    )
+    if pr_data.returncode != 0:
+        return "error", [("fetch", "❌", "Cannot fetch PR")], "needs-fix"
+    
+    pr = json.loads(pr_data.stdout)
+    
+    # 1. CI must pass
+    if auto.get("ci_passing", True):
+        checks = pr.get("statusCheckRollup", [])
+        failures_list = [c for c in checks if c.get("conclusion") == "FAILURE"]
+        if failures_list:
+            failures.append(f"CI failures: {len(failures_list)}")
+            results.append(("ci", "❌", f"{len(failures_list)} failing"))
+        else:
+            results.append(("ci", "✅", "all passing"))
+    
+    # 2. No conflicts
+    if auto.get("no_conflicts", True):
+        mergeable = pr.get("mergeable", "UNKNOWN")
+        if mergeable != "MERGEABLE":
+            failures.append(f"Merge conflicts: {mergeable}")
+            results.append(("conflicts", "❌", mergeable))
+        else:
+            results.append(("conflicts", "✅", "none"))
+    
+    # 3. Check files against protected list
+    import fnmatch
+    changed = [f.get("path", "") for f in pr.get("files", [])]
+    for file_path in changed:
+        for pattern in protected:
+            if fnmatch.fnmatch(file_path, pattern):
+                human_flags.append(f"Protected file: {file_path}")
+                results.append(("protected", "🔍", file_path))
+                break
+        else:
+            # Check security patterns
+            for sec_pat in rules.get("security_patterns", []):
+                if sec_pat in file_path.lower():
+                    human_flags.append(f"Security file: {file_path}")
+                    results.append(("security", "🔍", file_path))
+                    break
+    
+    # 4. Size check
+    max_add = auto.get("max_additions", 1000)
+    additions = pr.get("additions", 0)
+    if additions > max_add:
+        human_flags.append(f"Large PR: +{additions} lines (max {max_add})")
+        results.append(("size", "⚠️", f"+{additions} lines"))
+    else:
+        results.append(("size", "✅", f"+{additions} lines"))
+    
+    # 5. Trusted author
+    author = pr.get("author", {}).get("login", "")
+    trusted = auto.get("trusted_authors", [])
+    if author not in trusted and not any(author.startswith(t) for t in ["app/", "eqdmc-"]):
+        human_flags.append(f"Untrusted author: {author}")
+        results.append(("author", "🔍", author))
+    else:
+        results.append(("author", "✅", author))
+    
+    # Decision
+    max_files = auto.get("max_files_changed", 20)
+    if len(changed) > max_files:
+        human_flags.append(f"Many files: {len(changed)} changed (max {max_files})")
+    
+    if failures:
+        label = rules.get("labels", {}).get("needs_fix", "needs-fix")
+        return "blocked", results, label
+    elif human_flags:
+        label = rules.get("labels", {}).get("needs_human", "needs-human-review")
+        return "needs-human", results, label
+    else:
+        label = rules.get("labels", {}).get("auto_approve", "auto-approve")
+        return "approved", results, label
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+
+    if cmd == "--get":
+        key = sys.argv[2]
+        rules = load_rules()
+        keys = key.split(".")
+        val = rules
+        for k in keys:
+            val = val.get(k, {})
+        if isinstance(val, (dict, list)):
+            print(json.dumps(val))
+        else:
+            print(val)
+
+    elif cmd == "--list":
+        import yaml as yl
+        print(yl.dump(load_rules(), default_flow_style=False))
+
+    elif cmd == "--check":
+        pr_num = int(sys.argv[2])
+        repo = sys.argv[3] if len(sys.argv) > 3 else "eqdmc/security"
+        verdict, results, label = check_pr_against_rules(pr_num, repo)
+        print(f"Verdict: {verdict}")
+        print(f"Label: {label}")
+        print(f"Results:")
+        for name, icon, detail in results:
+            print(f"  {icon} {name}: {detail}")
+        print()
+        if verdict == "approved":
+            print("✅ Auto-approve — all rules pass")
+        elif verdict == "needs-human":
+            print("👤 Human review required")
+        else:
+            print("❌ Blocked")
+        sys.exit(0 if verdict == "approved" else 1)
+
+
+if __name__ == "__main__":
+    main()

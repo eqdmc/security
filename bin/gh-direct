@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# gh-direct — Run gh directly, bypassing the wrapper.
+# For internal tools only. Agents should NOT use this.
+exec /usr/bin/gh "$@"

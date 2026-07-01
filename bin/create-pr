@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""create-pr — World-class PR creation with templates and quality gates.
+
+All agents MUST use this tool. Direct `gh pr create` is denied at the guard layer.
+Templates and quality rules define what makes a world-class PR.
+
+Usage:
+  create-pr --template feature --title "feat: add dark mode" --body-file /tmp/pr.md
+  create-pr --template fix --title "fix: resolve login timeout" --body /tmp/pr.md
+  create-pr --template vetting --title "vet: restic for system-backup" --body-file /tmp/pr.md
+  create-pr --dry-run --template chore --title "chore: bump deps" --body-file /tmp/pr.md
+
+Templates defined in packages/pr-templates/
+Quality gates defined in packages/auto-merge-rules.yaml
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).parent.parent
+TEMPLATES_DIR = REPO / "packages" / "pr-templates"
+CONFIG = REPO / "packages" / "auto-merge-rules.yaml"
+
+# Quality gates — all must pass
+QUALITY_GATES = [
+    {
+        "name": "conventional-commit",
+        "description": "Title must start with conventional commit prefix",
+        "validate": lambda title, body: any(
+            title.startswith(p) for p in ["feat:", "fix:", "docs:", "test:", "chore:", "refactor:", "ci:", "perf:", "revert:"]
+        ),
+        "fix": "Start title with one of: feat:, fix:, docs:, test:, chore:, refactor:, ci:, perf:, revert:"
+    },
+    {
+        "name": "non-empty-body",
+        "description": "PR body must not be empty",
+        "validate": lambda _, body: body and len(body.strip()) > 50,
+        "fix": "Write a PR body of at least 50 characters describing what and why"
+    },
+    {
+        "name": "no-debug-code",
+        "description": "No debugging code in changes",
+        "validate": lambda _, body: not any(x in body.lower() for x in [
+            "debugger;", "console.log", "print(", "TODO without", "FIXME", "XXX"
+        ]),
+        "fix": "Remove debugging statements (console.log, print(), debugger). Reference TODOs with issue numbers."
+    },
+    {
+        "name": "tests-included",
+        "description": "Feature/fix PRs should include tests",
+        "validate": lambda title, body: True,  # Soft gate — warn only
+        "fix": "Consider adding tests for this change",
+        "soft": True
+    },
+]
+
+
+def load_templates():
+    """Load PR templates from packages/pr-templates/."""
+    templates = {}
+    if TEMPLATES_DIR.exists():
+        for f in sorted(TEMPLATES_DIR.glob("*.md")):
+            name = f.stem
+            content = f.read_text()
+            # Parse frontmatter if present
+            frontmatter = {}
+            if content.startswith("---"):
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    for line in parts[1].strip().split("\n"):
+                        if ":" in line:
+                            k, v = line.split(":", 1)
+                            frontmatter[k.strip()] = v.strip()
+                    content = parts[2].strip()
+            templates[name] = {"frontmatter": frontmatter, "body": content}
+    # Add built-in templates
+    if "feature" not in templates:
+        templates["feature"] = {"frontmatter": {}, "body": "## Summary\n\n{description}\n\n## Changes\n\n{changes}\n\n## Testing\n\n{testing}\n\n## Related Issues\n\nCloses #{issue}"}
+    if "fix" not in templates:
+        templates["fix"] = {"frontmatter": {}, "body": "## Bug Description\n\n{description}\n\n## Root Cause\n\n{cause}\n\n## Fix\n\n{changes}\n\n## Testing\n\n{testing}\n\nCloses #{issue}"}
+    return templates
+
+
+def load_quality_gates():
+    """Load quality gates from config."""
+    gates = list(QUALITY_GATES)
+    try:
+        import yaml
+        with open(CONFIG) as f:
+            rules = yaml.safe_load(f)
+            max_add = rules.get("auto_approve", {}).get("max_additions", 1000)
+            gates.append({
+                "name": "pr-size",
+                "description": f"PR should be under {max_add} additions",
+                "validate": lambda title, body: True,  # Checked at PR level
+                "fix": f"Split into smaller PRs (max {max_add} additions)",
+                "soft": True
+            })
+    except:
+        pass
+    return gates
+
+
+def validate_pr(title, body, template_name):
+    """Run all quality gates. Returns (pass, warnings, errors)."""
+    errors = []
+    warnings = []
+    for gate in load_quality_gates():
+        try:
+            result = gate["validate"](title, body)
+            if not result:
+                if gate.get("soft"):
+                    warnings.append(f"⚠️  {gate['name']}: {gate['fix']}")
+                else:
+                    errors.append(f"❌ {gate['name']}: {gate['fix']}")
+        except Exception:
+            errors.append(f"❌ {gate['name']}: validation error")
+    return len(errors) == 0, warnings, errors
+
+
+def build_pr_body(template_name, template, args):
+    """Build PR body from template and CLI args."""
+    body_template = template["body"]
+    body = body_template.format(
+        description=args.get("description", ""),
+        changes=args.get("changes", ""),
+        testing=args.get("testing", "Tests pass"),
+        issue=args.get("issue", ""),
+        cause=args.get("cause", ""),
+    )
+    return body
+
+
+def main():
+    if '--version' in sys.argv:
+        print("create-pr v0.1.0")
+        sys.exit(0)
+
+    import argparse
+    p = argparse.ArgumentParser(description="Create a world-class PR")
+    p.add_argument("--template", required=True, help="PR template (feature, fix, refactor, docs, chore, vetting)")
+    p.add_argument("--title", required=True, help="PR title (must start with conventional commit prefix)")
+    p.add_argument("--description", help="Brief description of the change")
+    p.add_argument("--changes", help="What changed and why")
+    p.add_argument("--testing", help="How the change was tested")
+    p.add_argument("--issue", help="Related issue number")
+    p.add_argument("--cause", help="Root cause (for fix template)")
+    p.add_argument("--body-file", help="Path to custom body file (skips template)")
+    p.add_argument("--repo", default="", help="Target repo")
+    p.add_argument("--list-templates", action="store_true", help="Show available templates")
+    p.add_argument("--dry-run", action="store_true", help="Validate and show output, don't create")
+    p.add_argument("--head", default="", help="Head branch (default: current branch)")
+    args = p.parse_args()
+
+    templates = load_templates()
+
+    if args.template not in templates:
+        print(f"❌ Unknown template '{args.template}'")
+        print(f"   Available: {', '.join(sorted(templates))}")
+        sys.exit(1)
+
+    title = args.title
+
+    # Quality gate: conventional commit
+    if not any(title.startswith(p) for p in ["feat:", "fix:", "docs:", "test:", "chore:", "refactor:", "ci:", "perf:", "revert:"]):
+        print(f"❌ Title must start with conventional commit prefix")
+        print(f"   Got: {title}")
+        print(f"   Expected: feat:|fix:|docs:|test:|chore:|refactor:...")
+        sys.exit(1)
+
+    # Build body
+    if args.body_file:
+        body = Path(args.body_file).read_text()
+    else:
+        args_dict = {k: getattr(args, k, "") for k in ["description", "changes", "testing", "issue", "cause"]}
+        body = build_pr_body(args.template, templates[args.template], args_dict)
+
+    # Quality gates
+    passed, warnings, errors = validate_pr(title, body, args.template)
+
+    print(f"\n{'='*60}")
+    print(f"  PR Quality Check: {args.template}")
+    print(f"{'='*60}")
+    print(f"  Title: {title}")
+    print(f"  Body:  {len(body)} chars")
+    print()
+
+    for w in warnings:
+        print(f"  {w}")
+    for e in errors:
+        print(f"  {e}")
+
+    if errors:
+        print(f"\n  ❌ {len(errors)} quality gate(s) failed — fix and re-run")
+        sys.exit(1)
+
+    if warnings:
+        print(f"\n  ⚠️  {len(warnings)} warning(s) — PR will be created but may need attention")
+
+    print(f"\n  ✅ All quality gates pass")
+    print()
+
+    if args.dry_run:
+        print(f"  PR Body:")
+        print(f"  {'='*40}")
+        print(body)
+        print(f"  {'='*40}")
+        print(f"  Dry run — PR not created")
+        sys.exit(0)
+
+    # Create PR
+    repo = args.repo or _detect_repo()
+    base = "main"
+    head = args.head or _current_branch()
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+        f.write(body)
+        body_file = f.name
+
+    cmd = ["gh", "pr", "create", "-R", repo, "--base", base, "--head", head,
+           "--title", title, "--body-file", body_file]
+
+    print(f"  Creating PR in {repo} ({head} → {base})...")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+    os.unlink(body_file)
+
+    if result.returncode == 0:
+        url = result.stdout.strip()
+        print(f"\n  ✅ PR created: {url}")
+        print(f"  Auto-review will check it shortly.")
+        sys.exit(0)
+    else:
+        print(f"\n  ❌ Failed to create PR: {result.stderr[:200]}")
+        sys.exit(1)
+
+
+def _detect_repo():
+    try:
+        r = subprocess.run(["gh", "repo", "view", "--json", "nameWithOwner"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            return json.loads(r.stdout)["nameWithOwner"]
+    except:
+        pass
+    return "eqdmc/security"
+
+
+def _current_branch():
+    try:
+        r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except:
+        return ""
+
+
+if __name__ == "__main__":
+    main()
+
+if __name__ == '__main__':
+    main()

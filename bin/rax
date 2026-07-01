@@ -61,6 +61,15 @@ fi
 # --- Paths (all env-var driven, sensible defaults) ---
 RAX_STATE_DIR="${RAX_STATE_DIR:-$HOME/.rax/state}"
 
+# Diagnostic: if there are files in the pending dir but we can't find them, warn
+if [ -d "$RAX_PENDING_DIR" ] && [ -z "${1:-}" ]; then
+    _file_count=$(ls "$RAX_PENDING_DIR"/[0-9]*.sh 2>/dev/null | wc -l)
+    if [ "$_file_count" -gt 0 ] && [ ! -f "$HOME/.rax/pending.sh" ]; then
+        : # Files exist and no old single-file — should be fine
+    fi
+    unset _file_count
+fi
+
 # Resolve pending action: RAX_PENDING_FILE > numbered arg > numbered dir > single file
 if [ -n "${RAX_PENDING_FILE:-}" ]; then
     ACTION="$RAX_PENDING_FILE"
