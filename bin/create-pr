@@ -137,6 +137,10 @@ def build_pr_body(template_name, template, args):
 
 
 def main():
+    if '--version' in sys.argv:
+        print("create-pr v0.1.0")
+        sys.exit(0)
+
     import argparse
     p = argparse.ArgumentParser(description="Create a world-class PR")
     p.add_argument("--template", required=True, help="PR template (feature, fix, refactor, docs, chore, vetting)")
@@ -256,4 +260,7 @@ def _current_branch():
 
 
 if __name__ == "__main__":
+    main()
+
+if __name__ == '__main__':
     main()
