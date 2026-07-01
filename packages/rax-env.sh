@@ -3,7 +3,8 @@
 # Source this from .bashrc / .zshrc on each machine.
 #
 # Auto-detects the runtime (opencode, claude-code, docker) and sets:
-#   RAX_PENDING_FILE  — where agents write staged actions
+#   RAX_PENDING_DIR   — numbered directory for staged actions (~/.rax/pending/N.sh)
+#   RAX_PENDING_FILE  — legacy single-file path (agents still use this, resolved to dir)
 #   RAX_STATE_DIR     — where results and audit logs go
 #   RAX_SESSION_ID    — session correlation (set by harness)
 #   RAX_POLICY_FILE   — danger patterns and thresholds
@@ -31,28 +32,28 @@ _rax_repo="${RAX_REPO_DIR:-$HOME/dev/eqdmc/security}"
 # Set platform-appropriate defaults (only if not already set)
 case "$_rax_platform" in
   opencode)
-    export RAX_PENDING_FILE="${RAX_PENDING_FILE:-$_rax_home/pending.sh}"
+    export RAX_PENDING_DIR="${RAX_PENDING_DIR:-$_rax_home/pending}"
     export RAX_STATE_DIR="${RAX_STATE_DIR:-$_rax_home/state}"
     export RAX_SESSION_ID="${RAX_SESSION_ID:-${OPENCODE_SESSION_ID:-unknown}}"
     ;;
   claude-code|macos)
-    export RAX_PENDING_FILE="${RAX_PENDING_FILE:-$_rax_home/pending.sh}"
+    export RAX_PENDING_DIR="${RAX_PENDING_DIR:-$_rax_home/pending}"
     export RAX_STATE_DIR="${RAX_STATE_DIR:-$_rax_home/state}"
     export RAX_SESSION_ID="${RAX_SESSION_ID:-${CLAUDE_SESSION_ID:-unknown}}"
     ;;
   docker)
-    export RAX_PENDING_FILE="${RAX_PENDING_FILE:-$_rax_home/pending.sh}"
+    export RAX_PENDING_DIR="${RAX_PENDING_DIR:-$_rax_home/pending}"
     export RAX_STATE_DIR="${RAX_STATE_DIR:-$_rax_home/state}"
     # Docker containers set this at entrypoint
     export RAX_SESSION_ID="${RAX_SESSION_ID:-docker-$(hostname)-$$}"
     ;;
   linux)
-    export RAX_PENDING_FILE="${RAX_PENDING_FILE:-$_rax_home/pending.sh}"
+    export RAX_PENDING_DIR="${RAX_PENDING_DIR:-$_rax_home/pending}"
     export RAX_STATE_DIR="${RAX_STATE_DIR:-$_rax_home/state}"
     export RAX_SESSION_ID="${RAX_SESSION_ID:-linux-$(hostname)-$$}"
     ;;
   *)
-    export RAX_PENDING_FILE="${RAX_PENDING_FILE:-$_rax_home/pending.sh}"
+    export RAX_PENDING_DIR="${RAX_PENDING_DIR:-$_rax_home/pending}"
     export RAX_STATE_DIR="${RAX_STATE_DIR:-$_rax_home/state}"
     export RAX_SESSION_ID="${RAX_SESSION_ID:-unknown}"
     ;;
