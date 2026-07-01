@@ -144,59 +144,15 @@ def create_rax_action(stuck_pr, repo):
             print(f"  ⏭️  Rax action already exists for PR #{pr}")
             return
     
-    action_file.write_text(f"""#!/bin/bash
-# Purpose: ESCALATION — Merge PR #{pr} ({repo})
-# Priority: P0
-# Type: merge/escalation
-# Description: PR #{pr} is stuck ({reasons}). Created by merge-escalate after {age}min.
-# Issue: {pr}
-# Action-ID: rax-escalate-{pr}-{int(time.time())}
-# Repo: {repo}
-set -euo pipefail
-
-echo ""
-echo "═══════════════════════════════════════════════════════════════"
-echo "  ESCALATION — Merge PR #{pr}"
-echo "═══════════════════════════════════════════════════════════════"
-echo ""
-echo "  Title:    {title}"
-echo "  Author:   {stuck_pr['author']}"
-echo "  Changes:  +{stuck_pr['additions']}/-{stuck_pr['deletions']}"
-echo "  Stuck:    {age} minutes"
-echo "  Reason:   {reasons}"
-echo "  Checks:   {checks['pass']} pass, {checks['fail']} fail"
-echo ""
-
-# Check who is authenticated — self-approval guard
-CURRENT_USER=$(gh api user 2>/dev/null | jq -r '.login' 2>/dev/null || echo "unknown")
-if echo "$CURRENT_USER" | grep -qE "eqdmc-agent-bots|eqdmc-merge-bot"; then
-  echo "  ⚠️  Currently authenticated as $CURRENT_USER (the app that created this PR)."
-  echo "     The app cannot approve its own PR."
-  echo ""
-  echo "  To approve:"
-  echo "    1. gh pr review {pr} -R {repo} --approve"
-  echo "    2. Then type 'y' below to merge"
-  echo ""
-elif echo "$CURRENT_USER" | grep -q "eqdmc-admin"; then
-  echo "  ✅ Authenticated as $CURRENT_USER — can approve and merge directly."
-fi
-
-read -p "  Approve and merge? (y/n) " -r ANS
-echo ""
-
-if [ "$ANS" = "y" ]; then
-  # Try to approve (may fail if self-approval, but merge might still work)
-  gh pr review {pr} -R {repo} --approve 2>&1 | sed 's/^/  /' || true
-  echo "  Merging..."
-  gh pr merge {pr} -R {repo} --squash 2>&1 | sed 's/^/  /' && \\
-    echo "" && \\
-    echo "  ✅ PR #{pr} merged." || \\
-    echo "  ❌ Merge failed. Approve via CLI first, then re-run rax."
-else
-  echo "  ❌ Escalation skipped."
-fi
-""")
-    action_file.chmod(0o600)
+    # Color codes for the rax action display
+    RED='\\033[0;31m'; GREEN='\\033[0;32m'; YELLOW='\\033[0;33m'
+    CYAN='\\033[0;36m'; MAGENTA='\\033[0;35m'; WHITE='\\033[1;37m'
+    DIM='\\033[38;5;242m'; BOLD='\\033[1m'; RESET='\\033[0m'
+    
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+    CYAN='\033[0;36m'; MAGENTA='\033[0;35m'; DIM='\033[38;5;242m'; BOLD='\033[1m'; RESET='\033[0m'
+    
+    RED='\\033[0;31m'; GREEN='\\033[0;32m'; YELLOW='\\033[0;33m'    CYAN='\\033[0;36m'; MAGENTA='\\033[0;35m'; DIM='\\033[38;5;242m'; BOLD='\\033[1m'; RESET='\\033[0m'        action_file.write_text(f"""#!/bin/bash# Purpose: ESCALATION — Merge PR #{pr} ({repo})# Priority: P0# Type: merge/escalation# Description: PR #{pr} is stuck ({reasons}). Created by merge-escalate after {age}min.# Issue: {pr}# Action-ID: rax-escalate-{pr}-{int(time.time())}# Repo: {repo}set -euo pipefailecho -e ""echo -e "${{MAGENTA}}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${{RESET}}"echo -e "${{BOLD}}${{MAGENTA}}  ESCALATION — Merge PR #${{pr}}${{RESET}}"echo -e "${{MAGENTA}}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${{RESET}}"echo -e ""echo -e "  ${{BOLD}}Title:${{RESET}}    ${{title}}"echo -e "  ${{BOLD}}Author:${{RESET}}   {stuck_pr['author']}"echo -e "  ${{BOLD}}Changes:${{RESET}}  +{stuck_pr['additions']}/-{stuck_pr['deletions']}"echo -e "  ${{BOLD}}Stuck:${{RESET}}    ${{YELLOW}}${{age}} minutes${{RESET}}"echo -e "  ${{BOLD}}Reason:${{RESET}}   ${{RED}}${{reasons}}${{RESET}}"echo -e "  ${{BOLD}}Checks:${{RESET}}  ${{GREEN}}{checks['pass']} pass${{RESET}}, ${{RED}}{checks['fail']} fail${{RESET}}"echo -e ""CURRENT_USER=$(gh api user 2>/dev/null | jq -r '.login' 2>/dev/null || echo "unknown")if echo "$CURRENT_USER" | grep -qE "eqdmc-agent-bots|eqdmc-merge-bot"; then  echo -e "  ${{YELLOW}}⚠  Auth: $CURRENT_USER (app — cannot self-approve)${{RESET}}"  echo -e "  ${{YELLOW}}   Approve via CLI first:${{RESET}}"  echo -e "   ${{CYAN}}gh pr review {pr} -R {repo} --approve${{RESET}}"elif echo "$CURRENT_USER" | grep -q "eqdmc-admin"; then  echo -e "  ${{GREEN}}✅ Auth: $CURRENT_USER — can approve directly${{RESET}}"fiecho -e ""echo -e "${{CYAN}}───── CONFIRMATION ──────────────────────────────────────────${{RESET}}"read -p "  ${{BOLD}}Approve and merge?${{RESET}} (y/n) " -r ANSif [ "$ANS" = "y" ]; then  gh pr review {pr} -R {repo} --approve 2>&1 | sed 's/^/  /' || true  echo -e "  ${{BOLD}}Merging...${{RESET}}"  gh pr merge {pr} -R {repo} --squash 2>&1 | sed 's/^/  /' && \    echo -e "  ${{GREEN}}✅ PR #{{pr}} merged.${{RESET}}" || \    echo -e "  ${{RED}}❌ Merge failed.${{RESET}} Fix conflicts and re-run rax."else  echo -e "  ${{RED}}❌ Escalation skipped.${{RESET}}"fi""")    action_file.chmod(0o600)
     print(f"  🚨 Rax escalation created: PR #{pr} ({reasons})")
     print(f"     Run: rax")
 
