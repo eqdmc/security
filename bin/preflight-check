@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# preflight-check — Binary precondition gates for the session.
+# Every agent must run this before any work. If any gate fails, the session
+# is blocked until the issue is fixed. This is the ONLY way to start work.
+#
+# Gates:
+#   1. gh CLI authenticated (GH_TOKEN set)
+#   2. rax deployed and functional
+#   3. Global opencode config has correct permissions
+#   4. Agent-harness hooks available (if applicable)
+#   5. Dotfiles are linked (machine is configured)
+#   6. Machine state matches manifest (no drift)
+#
+# Usage:
+#   preflight-check          # run all gates, pass/fail
+#   preflight-check --list   # show gates and their status
+#   preflight-check --json   # machine-readable output
+#
+# Exit codes:
+#   0 — all gates pass, session can proceed
+#   1 — one or more gates fail, session blocked
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+MODE="${1:-check}"
+PASS=0
+FAIL=0
+GATES=""
+
+gate() {
+    local name="$1" status="$2" msg="$3"
+    GATES="$GATES  $([ "$status" = "pass" ] && echo "✅" || echo "❌") $name — $msg\n"
+    if [ "$status" = "pass" ]; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+check_gate() {
+    local name="$1"
+    shift
+    if "$@" 2>/dev/null; then
+        gate "$name" "pass" ""
+    else
+        gate "$name" "fail" "$*"
+    fi
+}
+
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+echo "  PREFLIGHT CHECK"
+echo "═══════════════════════════════════════════════════════════════"
+echo ""
+
+# Gate 1: gh authenticated
+echo "  [1/6] GitHub authentication..."
+if [ -n "${GH_TOKEN:-}" ]; then
+    gate "gh auth" "pass" "GH_TOKEN set"
+elif gh api repos/eqdmc/security --jq '.name' >/dev/null 2>&1; then
+    gate "gh auth" "pass" "keyring auth"
+else
+    gate "gh auth" "fail" "Run: gh-session-auth"
+fi
+
+# Gate 2: rax deployed
+echo "  [2/6] rax deployment..."
+if command -v rax >/dev/null 2>&1 && rax --version >/dev/null 2>&1; then
+    gate "rax" "pass" "v$(rax --version 2>/dev/null || echo '?')"
+else
+    gate "rax" "fail" "Run: rax-deploy"
+fi
+
+# Gate 3: opencode config
+echo "  [3/6] opencode config..."
+if [ -f "$HOME/.config/opencode/opencode.jsonc" ]; then
+    if grep -q '*": "ask"' "$HOME/.config/opencode/opencode.jsonc" 2>/dev/null; then
+        gate "opencode config" "pass" "*→ask enforced"
+    else
+        gate "opencode config" "fail" "*→ask not set in global config"
+    fi
+else
+    gate "opencode config" "fail" "Config missing at ~/.config/opencode/opencode.jsonc"
+fi
+
+# Gate 4: dotfiles linked
+echo "  [4/6] dotfiles..."
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.config/eqdmc/dotfiles}"
+if [ -d "$DOTFILES_DIR" ] || [ -d "$HOME/dev/eqdmc/dotfiles" ]; then
+    gate "dotfiles" "pass" "linked"
+else
+    gate "dotfiles" "fail" "Run: eqdmc-init.sh or dotfiles/install.sh"
+fi
+
+# Gate 5: machine state
+echo "  [5/6] machine state..."
+DRIFT_SCRIPT=""
+for candidate in "$HOME/dev/eqdmc/dotfiles/machine/drift-check.sh" \
+    "$DOTFILES_DIR/machine/drift-check.sh"; do
+    [ -f "$candidate" ] && DRIFT_SCRIPT="$candidate" && break
+done
+if [ -n "$DRIFT_SCRIPT" ]; then
+    if bash "$DRIFT_SCRIPT" --lockdown >/dev/null 2>&1; then
+        gate "machine state" "pass" "no drift"
+    else
+        gate "machine state" "fail" "Drift detected — run machine/drift-check.sh"
+    fi
+else
+    gate "machine state" "skip" "drift-check.sh not found"
+fi
+
+# Gate 6: agent-harness
+echo "  [6/6] agent-harness..."
+if [ -d "$HOME/dev/eqdmc/agent-harness" ]; then
+    gate "agent-harness" "pass" "available"
+else
+    gate "agent-harness" "skip" "not cloned"
+fi
+
+# Summary
+echo ""
+echo "────────────────────────────────────────────────────────"
+printf "  Results: $PASS pass, $FAIL fail\n"
+echo "────────────────────────────────────────────────────────"
+echo -e "$GATES" | column -t -s '—' 2>/dev/null || echo -e "$GATES"
+echo ""
+
+if [ "$FAIL" -gt 0 ]; then
+    echo "  ❌ SESSION BLOCKED — fix failing gates before starting work."
+    exit 1
+else
+    echo "  ✅ All gates pass — session ready."
+    # Create sentinel file
+    mkdir -p "$HOME/.rax"
+    echo "passed:$(date +%s):$PASS" > "$HOME/.rax/preflight.sentinel"
+    exit 0
+fi
