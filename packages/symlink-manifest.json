@@ -1,0 +1,243 @@
+{
+  "version": "1",
+  "updated_at": "2026-07-01T17:00:00Z",
+  "updated_by": "agent (symlink audit)",
+  "symlinks": [
+    {
+      "name": "age",
+      "path": "/home/z/.local/bin/age",
+      "target": "(direct file)",
+      "type": "executable"
+    },
+    {
+      "name": "age-key-to-words",
+      "path": "/home/z/.local/bin/age-key-to-words",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/age-key-to-words",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/age-key-to-words",
+      "type": "symlink"
+    },
+    {
+      "name": "age-keygen",
+      "path": "/home/z/.local/bin/age-keygen",
+      "target": "(direct file)",
+      "type": "executable"
+    },
+    {
+      "name": "age-plugin-yubikey",
+      "path": "/home/z/.local/bin/age-plugin-yubikey",
+      "target": "/home/z/.cargo/bin/age-plugin-yubikey",
+      "target_resolved": "/home/z/.cargo/bin/age-plugin-yubikey",
+      "type": "symlink"
+    },
+    {
+      "name": "apfs-fuse",
+      "path": "/home/z/.local/bin/apfs-fuse",
+      "target": "(direct file)",
+      "type": "executable"
+    },
+    {
+      "name": "apfsutil",
+      "path": "/home/z/.local/bin/apfsutil",
+      "target": "(direct file)",
+      "type": "executable"
+    },
+    {
+      "name": "bip39",
+      "path": "/home/z/.local/bin/bip39",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/bip39",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/bip39",
+      "type": "symlink"
+    },
+    {
+      "name": "dotfiles-check-drift",
+      "path": "/home/z/.local/bin/dotfiles-check-drift",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-check-drift",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-check-drift",
+      "type": "symlink"
+    },
+    {
+      "name": "dotfiles-gen-protected-paths",
+      "path": "/home/z/.local/bin/dotfiles-gen-protected-paths",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-gen-protected-paths",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-gen-protected-paths",
+      "type": "symlink"
+    },
+    {
+      "name": "dotfiles-gen-sandbox-profile",
+      "path": "/home/z/.local/bin/dotfiles-gen-sandbox-profile",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-gen-sandbox-profile",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-gen-sandbox-profile",
+      "type": "symlink"
+    },
+    {
+      "name": "dotfiles-lock",
+      "path": "/home/z/.local/bin/dotfiles-lock",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-lock",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-lock",
+      "type": "symlink"
+    },
+    {
+      "name": "dotfiles-pkg",
+      "path": "/home/z/.local/bin/dotfiles-pkg",
+      "target": "/home/z/dev/eqdmc/dotfiles/packages/install.sh",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/packages/install.sh",
+      "type": "symlink"
+    },
+    {
+      "name": "dotfiles-sandbox-exec",
+      "path": "/home/z/.local/bin/dotfiles-sandbox-exec",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-sandbox-exec",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-sandbox-exec",
+      "type": "symlink"
+    },
+    {
+      "name": "dotfiles-sync",
+      "path": "/home/z/.local/bin/dotfiles-sync",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-sync",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-sync",
+      "type": "symlink"
+    },
+    {
+      "name": "dotfiles-unlock",
+      "path": "/home/z/.local/bin/dotfiles-unlock",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-unlock",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/dotfiles-unlock",
+      "type": "symlink"
+    },
+    {
+      "name": "gh",
+      "path": "/home/z/.local/bin/gh",
+      "target": "(direct file)",
+      "type": "executable"
+    },
+    {
+      "name": "gh-app-auth",
+      "path": "/home/z/.local/bin/gh-app-auth",
+      "target": "/home/z/dev/eqdmc/security/bin/gh-app-auth",
+      "target_resolved": "/home/z/dev/eqdmc/security/bin/gh-app-auth",
+      "type": "symlink"
+    },
+    {
+      "name": "py.test",
+      "path": "/home/z/.local/bin/py.test",
+      "target": "(direct file)",
+      "type": "executable"
+    },
+    {
+      "name": "pygmentize",
+      "path": "/home/z/.local/bin/pygmentize",
+      "target": "(direct file)",
+      "type": "executable"
+    },
+    {
+      "name": "pytest",
+      "path": "/home/z/.local/bin/pytest",
+      "target": "(direct file)",
+      "type": "executable"
+    },
+    {
+      "name": "rax",
+      "path": "/home/z/.local/bin/rax",
+      "target": "/home/z/dev/eqdmc/security/bin/rax",
+      "target_resolved": "/home/z/dev/eqdmc/security/bin/rax",
+      "type": "symlink"
+    },
+    {
+      "name": "rax-install",
+      "path": "/home/z/.local/bin/rax-install",
+      "target": "/home/z/dev/eqdmc/security/bin/rax-install",
+      "target_resolved": "/home/z/dev/eqdmc/security/bin/rax-install",
+      "type": "symlink"
+    },
+    {
+      "name": "rax-review",
+      "path": "/home/z/.local/bin/rax-review",
+      "target": "/home/z/dev/eqdmc/security/bin/rax-review",
+      "target_resolved": "/home/z/dev/eqdmc/security/bin/rax-review",
+      "type": "symlink"
+    },
+    {
+      "name": "secrets",
+      "path": "/home/z/.local/bin/secrets",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/secrets",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/secrets",
+      "type": "symlink"
+    },
+    {
+      "name": "secrets-edit",
+      "path": "/home/z/.local/bin/secrets-edit",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/secrets-edit",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/secrets-edit",
+      "type": "symlink"
+    },
+    {
+      "name": "secrets-run",
+      "path": "/home/z/.local/bin/secrets-run",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/secrets-run",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/secrets-run",
+      "type": "symlink"
+    },
+    {
+      "name": "sops",
+      "path": "/home/z/.local/bin/sops",
+      "target": "(direct file)",
+      "type": "executable"
+    },
+    {
+      "name": "sops-decrypt",
+      "path": "/home/z/.local/bin/sops-decrypt",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/sops-decrypt",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/sops-decrypt",
+      "type": "symlink"
+    },
+    {
+      "name": "yubikey-identity",
+      "path": "/home/z/.local/bin/yubikey-identity",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/yubikey-identity",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/yubikey-identity",
+      "type": "symlink"
+    },
+    {
+      "name": "yubikey-setup",
+      "path": "/home/z/.local/bin/yubikey-setup",
+      "target": "/home/z/dev/eqdmc/dotfiles/bin/yubikey-setup",
+      "target_resolved": "/home/z/dev/eqdmc/dotfiles/bin/yubikey-setup",
+      "type": "symlink"
+    }
+  ],
+  "path_entries": [
+    {
+      "directory": "/home/z/.cargo/bin",
+      "exists": true
+    },
+    {
+      "directory": "/home/z/.opencode/bin",
+      "exists": true
+    },
+    {
+      "directory": "/home/z/.opencode/bin",
+      "exists": true
+    },
+    {
+      "directory": "/home/z/.local/bin",
+      "exists": true
+    },
+    {
+      "directory": "/home/z/bin",
+      "exists": false
+    },
+    {
+      "directory": "/usr/local/bin",
+      "exists": true
+    },
+    {
+      "directory": "/usr/bin",
+      "exists": true
+    },
+    {
+      "directory": "/bin",
+      "exists": true
+    }
+  ],
+  "notes": "Track all symlinks and PATH entries for the eqdmc agent toolchain"
+}
