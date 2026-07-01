@@ -152,6 +152,7 @@ def main():
     p.add_argument("--cause", help="Root cause (for fix template)")
     p.add_argument("--body-file", help="Path to custom body file (skips template)")
     p.add_argument("--repo", default="", help="Target repo")
+    p.add_argument("--list-templates", action="store_true", help="Show available templates")
     p.add_argument("--dry-run", action="store_true", help="Validate and show output, don't create")
     p.add_argument("--head", default="", help="Head branch (default: current branch)")
     args = p.parse_args()
