@@ -166,19 +166,32 @@ echo "  Stuck:    {age} minutes"
 echo "  Reason:   {reasons}"
 echo "  Checks:   {checks['pass']} pass, {checks['fail']} fail"
 echo ""
-echo "  To approve: gh pr review {pr} -R {repo} --approve"
-echo "  To merge:   gh pr merge {pr} -R {repo} --squash"
-echo ""
+
+# Check who is authenticated — self-approval guard
+CURRENT_USER=$(gh api user 2>/dev/null | jq -r '.login' 2>/dev/null || echo "unknown")
+if echo "$CURRENT_USER" | grep -qE "eqdmc-agent-bots|eqdmc-merge-bot"; then
+  echo "  ⚠️  Currently authenticated as $CURRENT_USER (the app that created this PR)."
+  echo "     The app cannot approve its own PR."
+  echo ""
+  echo "  To approve:"
+  echo "    1. gh pr review {pr} -R {repo} --approve"
+  echo "    2. Then type 'y' below to merge"
+  echo ""
+elif echo "$CURRENT_USER" | grep -q "eqdmc-admin"; then
+  echo "  ✅ Authenticated as $CURRENT_USER — can approve and merge directly."
+fi
+
 read -p "  Approve and merge? (y/n) " -r ANS
 echo ""
 
 if [ "$ANS" = "y" ]; then
-  echo "  Approving..."
-  gh pr review {pr} -R {repo} --approve 2>&1 | sed 's/^/  /'
+  # Try to approve (may fail if self-approval, but merge might still work)
+  gh pr review {pr} -R {repo} --approve 2>&1 | sed 's/^/  /' || true
   echo "  Merging..."
-  gh pr merge {pr} -R {repo} --squash 2>&1 | sed 's/^/  /'
-  echo ""
-  echo "  ✅ PR #{pr} merged."
+  gh pr merge {pr} -R {repo} --squash 2>&1 | sed 's/^/  /' && \\
+    echo "" && \\
+    echo "  ✅ PR #{pr} merged." || \\
+    echo "  ❌ Merge failed. Approve via CLI first, then re-run rax."
 else
   echo "  ❌ Escalation skipped."
 fi
